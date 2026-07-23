@@ -239,7 +239,7 @@ That's the whole flow. For production (HTTPS + public access), see [Production D
 ### Option 1 — Build from source (recommended for now)
 
 ```bash
-git clone <your-repo>/ecorouter && cd ecorouter
+git clone https://github.com/ganjarsantoso/ecorouter && cd ecorouter
 make build                    # → ./bin/eco
 sudo make install             # → /usr/local/bin/eco
 ```

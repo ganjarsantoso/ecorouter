@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ganjar/ecorouter/internal/config"
@@ -116,7 +115,7 @@ func startDetached(cfg *config.Config) error {
 	c := exec.Command(exe, args...)
 	c.Stdout = logF
 	c.Stderr = logF
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	setSysProcAttr(c)
 	if err := c.Start(); err != nil {
 		_ = logF.Close()
 		return err
@@ -151,11 +150,7 @@ func newStopCmd() *cobra.Command {
 				_ = os.Remove(config.PIDPath())
 				return exitErr(5, fmt.Errorf("daemon is not running"))
 			}
-			proc, err := os.FindProcess(pid)
-			if err != nil {
-				return err
-			}
-			if err := proc.Signal(syscall.SIGTERM); err != nil {
+			if err := sendTermSignal(pid); err != nil {
 				return err
 			}
 			// wait up to 5s
@@ -170,7 +165,7 @@ func newStopCmd() *cobra.Command {
 				}
 				time.Sleep(100 * time.Millisecond)
 			}
-			_ = proc.Signal(syscall.SIGKILL)
+			_ = sendKillSignal(pid)
 			_ = os.Remove(config.PIDPath())
 			if output.JSON {
 				return output.PrintJSON(map[string]string{"status": "killed"})
@@ -211,12 +206,7 @@ func readPID() (int, bool) {
 }
 
 func processAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil
+	return processAlivePlatform(pid)
 }
 
 func newLogsCmd() *cobra.Command {

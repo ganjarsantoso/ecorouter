@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/ganjar/ecorouter/internal/auth"
@@ -336,7 +335,7 @@ func (s *Server) Run(detached bool) error {
 	}
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, interruptSignals...)
 
 	select {
 	case sig := <-sigCh:
@@ -366,15 +365,6 @@ func (s *Server) Stop() error {
 
 func writePID(path string) error {
 	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
-}
-
-func isAddrInUse(err error) bool {
-	if op, ok := err.(*net.OpError); ok {
-		if sys, ok := op.Err.(*os.SyscallError); ok {
-			return sys.Err == syscall.EADDRINUSE
-		}
-	}
-	return strings.Contains(err.Error(), "address already in use")
 }
 
 // ReloadAccess rebuilds access control from config.
