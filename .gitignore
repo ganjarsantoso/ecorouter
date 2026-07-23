@@ -1,0 +1,13 @@
+bin/
+.data/
+.data-*/
+*.db
+*.db-wal
+*.db-shm
+eco.pid
+eco.log
+dist/
+.idea/
+.vscode/
+*.exe
+prd*

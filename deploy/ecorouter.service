@@ -1,0 +1,28 @@
+# /etc/systemd/system/ecorouter.service
+# sudo useradd -r -s /usr/sbin/nologin ecorouter
+# sudo mkdir -p /etc/ecorouter /var/lib/ecorouter
+# sudo chown ecorouter:ecorouter /var/lib/ecorouter
+# sudo install -m 755 eco /usr/local/bin/eco
+
+[Unit]
+Description=EcoRouter LLM router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ecorouter
+Group=ecorouter
+Environment=ECO_HOME=/var/lib/ecorouter
+Environment=ECO_CONFIG=/etc/ecorouter/config.toml
+ExecStart=/usr/local/bin/eco start --config /etc/ecorouter/config.toml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/ecorouter
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
