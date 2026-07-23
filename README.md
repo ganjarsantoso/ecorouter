@@ -181,12 +181,13 @@ Every request logged with tokens, latency, cost. Unknown-priced models show as *
 - ✅ SQLite activity store: token · IP · route · model · tokens · latency · cost · status
 - ✅ Security audit log: auth failures, lockouts, revocations, rate/spend hits
 - ✅ Rollups by day / model / route / token
-- ✅ **Cost estimation** with a curated model price table — unknown models render as *unpriced*
+- ✅ **Cost estimation** from user-editable `pricing.toml` — unknown models render as *unpriced*
 - ✅ `--json` on every read command for scripting
 
 ### Operational
-- ✅ **`eco init` wizard** — 6 steps from fresh host to live endpoint
-- ✅ **`eco doctor`** — diagnoses config, DNS, ports, providers, savers, health
+- ✅ **Interactive main menu** — run `eco` with no args on a TTY
+- ✅ **`eco init` wizard** — menu-driven setup from fresh host to live endpoint
+- ✅ **`eco doctor`** — diagnoses config, DNS, ports, providers, savers, health, pricing
 - ✅ **Non-interactive mode** on every command for CI/scripting
 - ✅ Shell completions (bash / zsh / fish)
 - ✅ Single **static binary**, no CGO (pure-Go SQLite)
@@ -197,7 +198,23 @@ Every request logged with tokens, latency, cost. Unknown-priced models show as *
 
 ## 🚀 Quick Start
 
-### 60-second local demo
+> **New!** Just run `eco` with no arguments to open an interactive menu. Every
+> command is available as arrow-key choices, and every choice prints the
+> equivalent flag command so you can script it later.
+
+### Interactive mode
+
+```bash
+make build && export PATH="$PWD/bin:$PATH"
+export ECO_HOME="$PWD/.data"
+
+eco   # opens the main menu on a TTY
+```
+
+From the menu you can set up providers (paste any base URL — nothing is hardcoded),
+create routes, issue tokens, start the daemon, and edit model prices.
+
+### 60-second local demo (scriptable)
 
 ```bash
 # 1. Build
@@ -207,20 +224,25 @@ export ECO_HOME="$PWD/.data"     # local data dir (default: ~/.ecorouter)
 
 # 2. Non-interactive init
 eco init --yes \
-  --provider-type  openai \
-  --provider-key   "$OPENAI_API_KEY" \
-  --route-mode     single \
-  --route-models   gpt-4o-mini \
-  --token-label    laptop
+  --provider-name     openai \
+  --provider-auth     bearer \
+  --provider-base-url https://api.openai.com/v1 \
+  --provider-key      "$OPENAI_API_KEY" \
+  --route-mode        single \
+  --route-models      gpt-4o-mini \
+  --token-label       laptop
 
 #   → prints your token ONCE:  eco_live_9f2a…
 
-# 3. Start the daemon
+# 3. Optional: set model prices (otherwise activity shows "unpriced")
+eco pricing set openai/gpt-4o-mini --in 0.15 --out 0.60
+
+# 4. Start the daemon
 eco start -d
 eco status
 eco doctor
 
-# 4. Use it from any OpenAI-compatible client
+# 5. Use it from any OpenAI-compatible client
 export OPENAI_BASE_URL="http://127.0.0.1:8080/v1"
 export OPENAI_API_KEY="eco_live_9f2a…"
 
@@ -229,6 +251,8 @@ curl "$OPENAI_BASE_URL/chat/completions" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+> `--type` / `--provider-type` still work as hidden aliases for backward compatibility.
 
 That's the whole flow. For production (HTTPS + public access), see [Production Deployment](#-production-deployment-oci).
 
@@ -290,7 +314,9 @@ Grammar: **`eco <noun> <verb> [args] [flags]`** — two levels deep, guessable, 
 
 | Command | Description |
 |---|---|
-| `eco provider add <name>` | Add provider. Prompts for API key (hidden) or `--key $KEY`. Optional `--type openai\|anthropic\|ollama`, `--base-url` |
+| `eco provider add <name>` | Add provider. Prompts for API key (hidden) or `--key $KEY`. Requires `--base-url`. Auth via `--auth bearer\|anthropic-key\|none` (`--type` is a hidden legacy alias) |
+| `eco pricing set <provider>/<model> --in N --out N` | Set USD per-1M-token prices in `pricing.toml` |
+| `eco pricing list` / `eco pricing remove <key>` | List / remove price entries |
 | `eco provider list` | List providers with health dot. `--json` |
 | `eco provider test <name>` | Live connectivity + auth check, refreshes model catalog |
 | `eco provider remove <name>` | Remove provider and purge its secret |
@@ -626,7 +652,9 @@ sudo -u ecorouter env \
   ECO_CONFIG=/etc/ecorouter/config.toml \
   eco init --yes \
     --domain eco.you.dev \
-    --provider-type openai \
+    --provider-name openai \
+    --provider-auth bearer \
+    --provider-base-url https://api.openai.com/v1 \
     --provider-key "$OPENAI_API_KEY" \
     --route-mode fallback \
     --route-models gpt-4o,gpt-4o-mini
@@ -830,6 +858,22 @@ error_threshold = 0.5
 min_requests    = 5
 cooldown_ms     = 60000
 ```
+
+### Pricing (`pricing.toml`)
+
+Model cost estimates come from a user-editable file at `$ECO_HOME/pricing.toml`
+(default `~/.ecorouter/pricing.toml`). There is no built-in price table.
+
+```bash
+# Scriptable
+eco pricing set openai/gpt-4o-mini --in 0.15 --out 0.60
+eco pricing list
+eco pricing remove openai/gpt-4o-mini
+
+# Or via the interactive menu: eco → Providers → Set / edit model pricing
+```
+
+Unknown models always render as **unpriced** (never a fake `$0`).
 
 ### File layout
 

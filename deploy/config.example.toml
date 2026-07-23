@@ -1,5 +1,6 @@
 # EcoRouter example config — copy to /etc/ecorouter/config.toml or ~/.ecorouter/config.toml
 # Secrets (API keys, token hashes) NEVER go here — see secrets.toml / SQLite.
+# See ~/.ecorouter/pricing.toml for model prices (eco pricing set / interactive wizard).
 
 [server]
 port       = 8080

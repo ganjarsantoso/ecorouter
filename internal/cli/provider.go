@@ -1,21 +1,18 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ganjar/ecorouter/internal/config"
 	"github.com/ganjar/ecorouter/internal/output"
 	"github.com/ganjar/ecorouter/internal/secrets"
+	"github.com/ganjar/ecorouter/internal/tui"
 	"github.com/spf13/cobra"
-	"golang.org/x/term"
 )
 
 func newProviderCmd() *cobra.Command {
@@ -28,13 +25,28 @@ func newProviderCmd() *cobra.Command {
 }
 
 func newProviderAddCmd() *cobra.Command {
-	var key, baseURL, pType string
+	var key, baseURL, pAuth, pTypeLegacy, modelsFlag string
 	cmd := &cobra.Command{
-		Use:   "add <name>",
+		Use:   "add [name]",
 		Short: "Add a provider (API key stored in secrets, not config)",
-		Args:  cobra.ExactArgs(1),
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
+			// Interactive wizard when name/required fields missing on TTY
+			name := ""
+			if len(args) > 0 {
+				name = args[0]
+			}
+			authIn := pAuth
+			if authIn == "" {
+				authIn = pTypeLegacy
+			}
+			if tui.IsInteractive() && (name == "" || baseURL == "") {
+				return runProviderAddWizard()
+			}
+
+			if name == "" {
+				return exitErr(2, fmt.Errorf("provider name required (or run interactively on a TTY)"))
+			}
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
@@ -42,41 +54,30 @@ func newProviderAddCmd() *cobra.Command {
 			if _, exists := cfg.Providers[name]; exists {
 				return exitErr(1, fmt.Errorf("provider %q already exists", name))
 			}
-			if pType == "" {
-				pType = "openai"
-			}
-			pType = strings.ToLower(pType)
-			if pType != "openai" && pType != "anthropic" && pType != "ollama" {
-				// Custom provider: require base URL
-				if baseURL == "" {
-					return exitErr(2, fmt.Errorf("custom provider type %q requires --base-url", pType))
-				}
-			}
+
+			pType := normalizeAuth(authIn)
+			// NEVER invent a default base URL
+			baseURL = strings.TrimSpace(baseURL)
 			if baseURL == "" {
-				switch pType {
-				case "openai":
-					baseURL = "https://api.openai.com/v1"
-				case "anthropic":
-					baseURL = "https://api.anthropic.com/v1"
-				case "ollama":
-					baseURL = "http://127.0.0.1:11434/v1"
+				return exitErr(2, fmt.Errorf("--base-url is required"))
+			}
+			if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
+				return exitErr(2, fmt.Errorf("--base-url must start with http:// or https://"))
+			}
+
+			if key == "" && pType != "ollama" {
+				if tui.IsInteractive() {
+					if err := tui.Password(
+						"API key",
+						"Pasted from the provider's dashboard. Hidden as you type.",
+						&key,
+					); err != nil {
+						return err
+					}
 				}
 			}
 			if key == "" && pType != "ollama" {
-				fmt.Fprint(os.Stderr, "API key (hidden): ")
-				b, err := term.ReadPassword(int(syscall.Stdin))
-				fmt.Fprintln(os.Stderr)
-				if err != nil {
-					// non-tty fallback
-					reader := bufio.NewReader(os.Stdin)
-					line, _ := reader.ReadString('\n')
-					key = strings.TrimSpace(line)
-				} else {
-					key = strings.TrimSpace(string(b))
-				}
-			}
-			if key == "" && pType != "ollama" {
-				return exitErr(2, fmt.Errorf("API key required (use --key or enter interactively)"))
+				return exitErr(2, fmt.Errorf("API key required (use --key)"))
 			}
 
 			sec, err := secrets.Load("")
@@ -89,7 +90,13 @@ func newProviderAddCmd() *cobra.Command {
 				}
 			}
 
-			models, testErr := fetchModels(pType, baseURL, key)
+			var models []string
+			var testErr error
+			if modelsFlag != "" {
+				models = splitModels(modelsFlag)
+			} else {
+				models, testErr = fetchModels(pType, baseURL, key)
+			}
 			cfg.Providers[name] = config.ProviderConfig{
 				Type:    pType,
 				BaseURL: baseURL,
@@ -101,12 +108,13 @@ func newProviderAddCmd() *cobra.Command {
 
 			if output.JSON {
 				return output.PrintJSON(map[string]any{
-					"name": name, "type": pType, "base_url": baseURL, "models": len(models),
-					"verified": testErr == nil,
+					"name": name, "type": pType, "auth": typeToAuthStyle(pType),
+					"base_url": baseURL, "models": len(models),
+					"verified": testErr == nil && modelsFlag == "",
 				})
 			}
-			if testErr != nil {
-				output.Success(fmt.Sprintf("Provider %q added (%s).", name, pType))
+			if modelsFlag == "" && testErr != nil {
+				output.Success(fmt.Sprintf("Provider %q added (%s).", name, typeToAuthStyle(pType)))
 				output.Warn(fmt.Sprintf("Could not verify connectivity: %v", testErr))
 				output.Info("  Fix: eco provider test " + name)
 			} else {
@@ -116,8 +124,11 @@ func newProviderAddCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&key, "key", "", "API key (prefer env: --key $OPENAI_API_KEY)")
-	cmd.Flags().StringVar(&baseURL, "base-url", "", "provider base URL")
-	cmd.Flags().StringVar(&pType, "type", "openai", "auth type: openai|anthropic|ollama (or any with --base-url)")
+	cmd.Flags().StringVar(&baseURL, "base-url", "", "provider base URL (required; no defaults)")
+	cmd.Flags().StringVar(&pAuth, "auth", "", "bearer|anthropic-key|none  (or legacy: openai|anthropic|ollama)")
+	cmd.Flags().StringVar(&pTypeLegacy, "type", "", "DEPRECATED alias for --auth")
+	_ = cmd.Flags().MarkHidden("type")
+	cmd.Flags().StringVar(&modelsFlag, "models", "", "comma-separated model IDs (skip catalog fetch)")
 	return cmd
 }
 
@@ -134,6 +145,7 @@ func newProviderListCmd() *cobra.Command {
 			type row struct {
 				Name    string `json:"name"`
 				Type    string `json:"type"`
+				Auth    string `json:"auth"`
 				BaseURL string `json:"base_url"`
 				Models  int    `json:"models"`
 				HasKey  bool   `json:"has_key"`
@@ -145,18 +157,18 @@ func newProviderListCmd() *cobra.Command {
 				if p.Type == "ollama" {
 					has = true
 				}
-				rows = append(rows, row{name, p.Type, p.BaseURL, len(p.Models), has})
+				rows = append(rows, row{name, p.Type, typeToAuthStyle(p.Type), p.BaseURL, len(p.Models), has})
 				dot := output.HealthDot(has)
-				table = append(table, []string{dot + " " + name, p.Type, p.BaseURL, fmt.Sprintf("%d", len(p.Models))})
+				table = append(table, []string{dot + " " + name, typeToAuthStyle(p.Type), p.BaseURL, fmt.Sprintf("%d", len(p.Models))})
 			}
 			if output.JSON {
 				return output.PrintJSON(rows)
 			}
 			if len(table) == 0 {
-				output.Info("No providers. Add one: eco provider add openai --key $OPENAI_API_KEY")
+				output.Info("No providers. Add one: eco provider add myapi --auth bearer --base-url https://… --key $KEY")
 				return nil
 			}
-			output.Table([]string{"NAME", "TYPE", "BASE URL", "MODELS"}, table)
+			output.Table([]string{"NAME", "AUTH", "BASE URL", "MODELS"}, table)
 			return nil
 		},
 	}

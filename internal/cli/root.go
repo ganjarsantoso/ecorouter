@@ -24,9 +24,14 @@ func NewRoot() *cobra.Command {
 		Short:         "EcoRouter — self-hosted LLM router (HTTPS + Bearer token)",
 		Long:          `EcoRouter is a self-hosted reverse proxy for LLM API traffic.
 Manage providers, routes, tokens, and savers from the terminal.
-The daemon binds loopback-only; expose via Caddy (TLS) on the host.`,
+The daemon binds loopback-only; expose via Caddy (TLS) on the host.
+
+Run with no arguments on a TTY to open the interactive menu.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMainMenu(cmd)
+		},
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			output.JSON = jsonOut
 			output.NoColor = noColor
@@ -55,6 +60,7 @@ The daemon binds loopback-only; expose via Caddy (TLS) on the host.`,
 		newTokenCmd(),
 		newAccessCmd(),
 		newSaverCmd(),
+		newPricingCmd(),
 		newStartCmd(),
 		newStopCmd(),
 		newRestartCmd(),

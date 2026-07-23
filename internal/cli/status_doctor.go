@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ganjar/ecorouter/internal/config"
+	"github.com/ganjar/ecorouter/internal/cost"
 	"github.com/ganjar/ecorouter/internal/output"
 	"github.com/ganjar/ecorouter/internal/secrets"
 	"github.com/ganjar/ecorouter/internal/store"
@@ -207,6 +208,18 @@ func newDoctorCmd() *cobra.Command {
 				checks = append(checks, check{"caddy", true, "/etc/caddy/Caddyfile present", ""})
 			} else {
 				checks = append(checks, check{"caddy", true, "Caddyfile not found (ok for local dev)", "see deploy/Caddyfile for production"})
+			}
+
+			// pricing.toml (optional — missing means all costs show as unpriced)
+			if !cost.PricingFileExists() {
+				checks = append(checks, check{
+					"pricing", false,
+					"no pricing.toml — all activity will show as \"unpriced\"",
+					"eco  → Providers → Set / edit model pricing  OR  eco pricing set <provider>/<model> --in 2.50 --out 10.00",
+				})
+			} else {
+				n := len(cost.GetPrices())
+				checks = append(checks, check{"pricing", true, fmt.Sprintf("%d price(s) in %s", n, cost.PricingPath()), ""})
 			}
 
 			if output.JSON {

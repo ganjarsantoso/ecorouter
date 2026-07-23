@@ -10,4 +10,4 @@ dist/
 .idea/
 .vscode/
 *.exe
-prd*
+prd/
