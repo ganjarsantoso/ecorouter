@@ -47,7 +47,10 @@ func newProviderAddCmd() *cobra.Command {
 			}
 			pType = strings.ToLower(pType)
 			if pType != "openai" && pType != "anthropic" && pType != "ollama" {
-				return exitErr(2, fmt.Errorf("type must be openai|anthropic|ollama"))
+				// Custom provider: require base URL
+				if baseURL == "" {
+					return exitErr(2, fmt.Errorf("custom provider type %q requires --base-url", pType))
+				}
 			}
 			if baseURL == "" {
 				switch pType {
@@ -114,7 +117,7 @@ func newProviderAddCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&key, "key", "", "API key (prefer env: --key $OPENAI_API_KEY)")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "provider base URL")
-	cmd.Flags().StringVar(&pType, "type", "openai", "openai|anthropic|ollama")
+	cmd.Flags().StringVar(&pType, "type", "openai", "auth type: openai|anthropic|ollama (or any with --base-url)")
 	return cmd
 }
 

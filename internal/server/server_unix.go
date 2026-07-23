@@ -5,7 +5,6 @@ package server
 import (
 	"net"
 	"os"
-	"os/signal"
 	"strings"
 	"syscall"
 )

@@ -20,7 +20,7 @@ import (
 
 func newInitCmd() *cobra.Command {
 	var nonInteractive bool
-	var domain, providerType, providerKey, routeName, routeMode, routeModels, tokenLabel, tokenExpires string
+	var domain, providerType, providerKey, providerBaseURL, routeName, routeMode, routeModels, tokenLabel, tokenExpires string
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "First-run wizard: domain, provider, route, token",
@@ -111,7 +111,7 @@ func newInitCmd() *cobra.Command {
 				fmt.Println("  3/6  Add your first provider")
 			}
 			if providerType == "" {
-				providerType = ask("Type (openai / anthropic / ollama)", "openai")
+				providerType = ask("Type (openai / anthropic / ollama / custom)", "openai")
 			}
 			providerType = strings.ToLower(providerType)
 			name := providerType
@@ -125,7 +125,11 @@ func newInitCmd() *cobra.Command {
 				case "ollama":
 					baseURL = "http://127.0.0.1:11434/v1"
 				default:
-					return exitErr(2, fmt.Errorf("unknown provider type %q", providerType))
+					// Custom provider: require base URL via flag
+					if providerBaseURL == "" {
+						return exitErr(2, fmt.Errorf("custom provider type %q requires --provider-base-url", providerType))
+					}
+					baseURL = providerBaseURL
 				}
 				key := providerKey
 				if key == "" && providerType != "ollama" && !nonInteractive {
@@ -274,8 +278,9 @@ func newInitCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&nonInteractive, "yes", false, "non-interactive (use flags/env)")
 	cmd.Flags().StringVar(&domain, "domain", "", "public domain")
-	cmd.Flags().StringVar(&providerType, "provider-type", "", "openai|anthropic|ollama")
+	cmd.Flags().StringVar(&providerType, "provider-type", "", "openai|anthropic|ollama|custom")
 	cmd.Flags().StringVar(&providerKey, "provider-key", "", "provider API key")
+	cmd.Flags().StringVar(&providerBaseURL, "provider-base-url", "", "provider base URL (required for custom types)")
 	cmd.Flags().StringVar(&routeName, "route-name", "default", "first route name")
 	cmd.Flags().StringVar(&routeMode, "route-mode", "fallback", "single|fallback|round")
 	cmd.Flags().StringVar(&routeModels, "route-models", "gpt-4o-mini", "comma-separated models")
