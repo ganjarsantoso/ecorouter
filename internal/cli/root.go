@@ -11,22 +11,31 @@ import (
 )
 
 var (
-	cfgPath  string
-	jsonOut  bool
-	noColor  bool
-	quiet    bool
-	verbose  bool
+	cfgPath    string
+	jsonOut    bool
+	noColor    bool
+	quiet      bool
+	verbose    bool
+	wizardMode bool
 )
+
+// WizardRequested reports whether the user asked for --wizard guidance
+// on the current command. All commands can check this via the gap-filling
+// helpers (askString/askChoice/askPick) to force a prompt even when flags
+// are present (the value is then used as the pre-filled default).
+func WizardRequested() bool { return wizardMode }
 
 func NewRoot() *cobra.Command {
 	root := &cobra.Command{
 		Use:           "eco",
 		Short:         "EcoRouter — self-hosted LLM router (HTTPS + Bearer token)",
-		Long:          `EcoRouter is a self-hosted reverse proxy for LLM API traffic.
+		Long: `EcoRouter is a self-hosted reverse proxy for LLM API traffic.
 Manage providers, routes, tokens, and savers from the terminal.
 The daemon binds loopback-only; expose via Caddy (TLS) on the host.
 
-Run with no arguments on a TTY to open the interactive menu.`,
+New to the terminal? Just type any command without options and EcoRouter
+will guide you. Example: eco provider add. Or add --wizard to any command
+to walk through every step.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -45,6 +54,8 @@ Run with no arguments on a TTY to open the interactive menu.`,
 	root.PersistentFlags().BoolVar(&noColor, "no-color", false, "disable colored output")
 	root.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "minimal output")
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
+	root.PersistentFlags().BoolVarP(&wizardMode, "wizard", "w", false,
+		"guide me step-by-step (interactive prompts for this command)")
 
 	root.AddCommand(
 		newInitCmd(),

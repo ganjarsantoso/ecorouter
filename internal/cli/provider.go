@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/ganjar/ecorouter/internal/config"
 	"github.com/ganjar/ecorouter/internal/output"
 	"github.com/ganjar/ecorouter/internal/secrets"
@@ -19,6 +20,7 @@ func newProviderCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "provider",
 		Short: "Manage LLM providers",
+		Long:  `Manage LLM providers. Each provider holds a base URL and an API key (stored separately, never in config.toml).`,
 	}
 	cmd.AddCommand(newProviderAddCmd(), newProviderListCmd(), newProviderTestCmd(), newProviderRemoveCmd())
 	return cmd
@@ -29,57 +31,98 @@ func newProviderAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add [name]",
 		Short: "Add a provider (API key stored in secrets, not config)",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Interactive wizard when name/required fields missing on TTY
-			name := ""
-			if len(args) > 0 {
-				name = args[0]
-			}
-			authIn := pAuth
-			if authIn == "" {
-				authIn = pTypeLegacy
-			}
-			if tui.IsInteractive() && (name == "" || baseURL == "") {
-				return runProviderAddWizard()
-			}
+		Long: `Add an LLM provider.
 
-			if name == "" {
-				return exitErr(2, fmt.Errorf("provider name required (or run interactively on a TTY)"))
-			}
+💡 Run with no arguments (or --wizard) to be guided step-by-step.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
 			}
-			if _, exists := cfg.Providers[name]; exists {
-				return exitErr(1, fmt.Errorf("provider %q already exists", name))
+			force := WizardRequested()
+
+			// name may come from positional arg
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
 			}
 
-			pType := normalizeAuth(authIn)
-			// NEVER invent a default base URL
-			baseURL = strings.TrimSpace(baseURL)
-			if baseURL == "" {
-				return exitErr(2, fmt.Errorf("--base-url is required"))
+			// 1. auth style (choice) — pTypeLegacy is a deprecated --type alias
+			authIn := pAuth
+			if authIn == "" {
+				authIn = pTypeLegacy
 			}
-			if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
-				return exitErr(2, fmt.Errorf("--base-url must start with http:// or https://"))
+			if !force && pTypeLegacy != "" && pAuth == "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), "warning: --type is deprecated; use --auth")
 			}
+			authVal, err := askChoice(authIn, "auth",
+				"How does this provider authenticate?",
+				"If unsure, pick the first — most APIs use Bearer tokens.",
+				[]huh.Option[string]{
+					huh.NewOption("🔑  Bearer token in Authorization header", "bearer"),
+					huh.NewOption("🗝️   x-api-key header (Anthropic-style)", "anthropic-key"),
+					huh.NewOption("🚫  No authentication (local models)", "none"),
+				}, force)
+			if err != nil {
+				return err
+			}
+			pType := normalizeAuth(authVal)
+			isNoAuth := pType == "ollama"
 
-			if key == "" && pType != "ollama" {
-				if tui.IsInteractive() {
-					if err := tui.Password(
-						"API key",
-						"Pasted from the provider's dashboard. Hidden as you type.",
-						&key,
-					); err != nil {
-						return err
+			// 2. name (text)
+			name, err = askString(name, "name",
+				"Give this provider a name",
+				"How you'll refer to it in routes.",
+				"e.g. openrouter, deepseek, local-llama", force,
+				func(s string) error {
+					s = strings.TrimSpace(s)
+					if s == "" {
+						return fmt.Errorf("name required")
 					}
+					if strings.ContainsAny(s, " /\\") {
+						return fmt.Errorf("name cannot contain spaces or slashes")
+					}
+					if _, ok := cfg.Providers[s]; ok {
+						return fmt.Errorf("provider %q already exists", s)
+					}
+					return nil
+				})
+			if err != nil {
+				return err
+			}
+			name = strings.TrimSpace(name)
+
+			// 3. base URL (text) — NO hardcoded default
+			baseURL, err = askString(baseURL, "base-url",
+				"Base URL",
+				"Copy from the provider's docs, include the version prefix.",
+				"https://api.example.com/v1", force,
+				func(s string) error {
+					s = strings.TrimSpace(s)
+					if s == "" {
+						return fmt.Errorf("URL required")
+					}
+					if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+						return fmt.Errorf("must start with http:// or https://")
+					}
+					return nil
+				})
+			if err != nil {
+				return err
+			}
+			baseURL = strings.TrimSpace(baseURL)
+
+			// 4. key (secret, unless none)
+			if !isNoAuth {
+				key, err = askSecret(key, "key",
+					"API key", "Pasted from the provider dashboard. Hidden as you type.", force)
+				if err != nil {
+					return err
 				}
 			}
-			if key == "" && pType != "ollama" {
-				return exitErr(2, fmt.Errorf("API key required (use --key)"))
-			}
 
+			// 5. Persist + fetch + model multi-select
 			sec, err := secrets.Load("")
 			if err != nil {
 				return err
@@ -95,7 +138,21 @@ func newProviderAddCmd() *cobra.Command {
 			if modelsFlag != "" {
 				models = splitModels(modelsFlag)
 			} else {
+				if tui.IsInteractive() {
+					fmt.Println("  ⏳ Testing connection and fetching model catalog…")
+				}
 				models, testErr = fetchModels(pType, baseURL, key)
+				// If interactive (or wizard) AND no --models, offer a multi-select.
+				if testErr == nil && len(models) > 0 && tui.IsInteractive() {
+					var chosen []string
+					mErr := tui.MultiSelect(
+						fmt.Sprintf("Found %d models. Which ones do you want available?", len(models)),
+						"Space to toggle. Enter to confirm. Leave empty to enable ALL.",
+						modelOptionList(models), &chosen)
+					if mErr == nil && len(chosen) > 0 {
+						models = chosen
+					}
+				}
 			}
 			cfg.Providers[name] = config.ProviderConfig{
 				Type:    pType,
@@ -107,19 +164,30 @@ func newProviderAddCmd() *cobra.Command {
 			}
 
 			if output.JSON {
-				return output.PrintJSON(map[string]any{
+				_ = output.PrintJSON(map[string]any{
 					"name": name, "type": pType, "auth": typeToAuthStyle(pType),
 					"base_url": baseURL, "models": len(models),
 					"verified": testErr == nil && modelsFlag == "",
 				})
+				printEquivalentIfInteractive("eco provider add", []string{
+					name,
+					"--auth " + authVal,
+					"--base-url " + baseURL,
+				}, key, models)
+				return nil
 			}
 			if modelsFlag == "" && testErr != nil {
 				output.Success(fmt.Sprintf("Provider %q added (%s).", name, typeToAuthStyle(pType)))
 				output.Warn(fmt.Sprintf("Could not verify connectivity: %v", testErr))
 				output.Info("  Fix: eco provider test " + name)
 			} else {
-				output.Success(fmt.Sprintf("Provider %q added — %d models available.", name, len(models)))
+				output.Success(fmt.Sprintf("Provider %q added — %d model(s) enabled.", name, len(models)))
 			}
+			printEquivalentIfInteractive("eco provider add", []string{
+				name,
+				"--auth " + authVal,
+				"--base-url " + baseURL,
+			}, key, models)
 			return nil
 		},
 	}
@@ -130,6 +198,32 @@ func newProviderAddCmd() *cobra.Command {
 	_ = cmd.Flags().MarkHidden("type")
 	cmd.Flags().StringVar(&modelsFlag, "models", "", "comma-separated model IDs (skip catalog fetch)")
 	return cmd
+}
+
+// modelOptionList converts a list of model IDs into huh.Options.
+func modelOptionList(models []string) []huh.Option[string] {
+	o := make([]huh.Option[string], 0, len(models))
+	for _, m := range models {
+		o = append(o, huh.NewOption(m, m))
+	}
+	return o
+}
+
+// printEquivalentIfInteractive shows the flag-form of what the command did,
+// but only when running interactively (so scripts stay quiet).
+// It also redacts the key into $KEY for teachability.
+func printEquivalentIfInteractive(cmd string, args []string, key string, models []string) {
+	if !tui.IsInteractive() {
+		return
+	}
+	all := append([]string{}, args...)
+	if key != "" {
+		all = append(all, "--key $KEY")
+	}
+	if len(models) > 0 {
+		all = append(all, fmt.Sprintf("--models %q", strings.Join(models, ",")))
+	}
+	tui.PrintEquivalent(cmd, all)
 }
 
 func newProviderListCmd() *cobra.Command {
@@ -175,15 +269,30 @@ func newProviderListCmd() *cobra.Command {
 }
 
 func newProviderTestCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "test <name>",
+	testCmd := &cobra.Command{
+		Use:   "test [name]",
 		Short: "Live connectivity + auth check",
-		Args:  cobra.ExactArgs(1),
+		Long: `Live connectivity + auth check for an existing provider.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
+			}
+			force := WizardRequested()
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			name, err = askPick(name, "name", "Test which provider?",
+				"Live connectivity check.", providerOptions(cfg), force)
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				return exitErr(1, fmt.Errorf("no provider selected"))
 			}
 			p, ok := cfg.Providers[name]
 			if !ok {
@@ -212,24 +321,51 @@ func newProviderTestCmd() *cobra.Command {
 				return output.PrintJSON(map[string]any{"ok": true, "models": len(models)})
 			}
 			output.Success(fmt.Sprintf("Provider %q OK — %d models.", name, len(models)))
+			tui.PrintEquivalent("eco provider test", []string{name})
 			return nil
 		},
 	}
+	return testCmd
 }
 
 func newProviderRemoveCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "remove <name>",
+	var assumeYes bool
+	cmd := &cobra.Command{
+		Use:   "remove [name]",
 		Short: "Remove provider and purge its secret",
-		Args:  cobra.ExactArgs(1),
+		Long: `Remove a provider and purge its API key from secrets.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
 			}
+			force := WizardRequested()
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			name, err = askPick(name, "name", "Remove which provider?",
+				"Provider to delete (also purges its secret).", providerOptions(cfg), force)
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				return exitErr(1, fmt.Errorf("no provider selected"))
+			}
 			if _, ok := cfg.Providers[name]; !ok {
 				return exitErr(1, fmt.Errorf("provider %q not found", name))
+			}
+			ok, err := confirmDestructive(assumeYes,
+				fmt.Sprintf("Remove provider %q?", name),
+				"Deletes the provider from config and purges its API key. Routes that reference its models will break.")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
 			}
 			delete(cfg.Providers, name)
 			if err := cfg.Save(); err != nil {
@@ -242,9 +378,12 @@ func newProviderRemoveCmd() *cobra.Command {
 				return output.PrintJSON(map[string]string{"removed": name})
 			}
 			output.Success(fmt.Sprintf("Provider %q removed; secret purged.", name))
+			tui.PrintEquivalent("eco provider remove", []string{name, "--yes"})
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "skip confirmation prompt")
+	return cmd
 }
 
 func fetchModels(pType, baseURL, key string) ([]string, error) {

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/ganjar/ecorouter/internal/output"
 	"github.com/ganjar/ecorouter/internal/store"
 	"github.com/spf13/cobra"
@@ -17,12 +18,48 @@ func newActivityCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "activity",
 		Short: "Recent requests: token, IP, route, model, latency, status",
+		Long: `Recent request activity.
+
+💡 Use --wizard (or run bare on a TTY) to choose a time window and token filter.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db, err := store.Open("")
 			if err != nil {
 				return err
 			}
 			defer db.Close()
+			force := WizardRequested()
+			if force {
+				since, err = askChoice(since, "since",
+					"Time window", "",
+					[]huh.Option[string]{
+						huh.NewOption("Last hour", "1h"),
+						huh.NewOption("Last 24 hours", "24h"),
+						huh.NewOption("Last 7 days", "7d"),
+						huh.NewOption("All / custom…", "__custom__"),
+					}, force)
+				if err != nil {
+					return err
+				}
+				if since == "__custom__" {
+					since, err = askString("", "since", "Custom window",
+						"e.g. 2h, 3d, 48h", "24h", force, nil)
+					if err != nil {
+						return err
+					}
+				}
+				if tokenID == "" {
+					opts, err := tokenOptions(db)
+					if err != nil {
+						return err
+					}
+					opts = append([]huh.Option[string]{huh.NewOption("All tokens", "")}, opts...)
+					tokenID, err = askPick("", "token", "Filter by token?",
+						"", opts, force)
+					if err != nil {
+						return err
+					}
+				}
+			}
 			var sinceT time.Time
 			if since != "" {
 				d, err := parseSince(since)
@@ -77,7 +114,46 @@ func newStatsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stats",
 		Short: "Rollups by day / model / route / token",
+		Long: `Rollups by day, model, route, or token.
+
+💡 Use --wizard (or run bare on a TTY) to choose the grouping and time window.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			force := WizardRequested()
+			if force {
+				if group == "" {
+					group = "route"
+				}
+				group, err := askChoice(group, "by",
+					"Group by", "",
+					[]huh.Option[string]{
+						huh.NewOption("Route", "route"),
+						huh.NewOption("Model", "model"),
+						huh.NewOption("Token", "token"),
+						huh.NewOption("Day", "day"),
+					}, force)
+				if err != nil {
+					return err
+				}
+				_ = group
+				since, err = askChoice(since, "since",
+					"Time window", "",
+					[]huh.Option[string]{
+						huh.NewOption("Last hour", "1h"),
+						huh.NewOption("Last 24 hours", "24h"),
+						huh.NewOption("Last 7 days", "7d"),
+						huh.NewOption("Custom…", "__custom__"),
+					}, force)
+				if err != nil {
+					return err
+				}
+				if since == "__custom__" {
+					since, err = askString("", "since", "Custom window",
+						"e.g. 2h, 3d", "24h", force, nil)
+					if err != nil {
+						return err
+					}
+				}
+			}
 			if group == "" {
 				group = "route"
 			}
@@ -130,7 +206,33 @@ func newAuditCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Security-focused view: auth failures, lockouts, revocations",
+		Long: `Security-focused view: auth failures, lockouts, revocations, scope changes.
+
+💡 Use --wizard (or run bare on a TTY) to pick a row count.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			force := WizardRequested()
+			if force {
+				limStr, err := askChoice(fmt.Sprintf("%d", limit), "limit",
+					"How many events?", "",
+					[]huh.Option[string]{
+						huh.NewOption("25", "25"),
+						huh.NewOption("50", "50"),
+						huh.NewOption("100", "100"),
+						huh.NewOption("Custom…", "__custom__"),
+					}, force)
+				if err != nil {
+					return err
+				}
+				if limStr == "__custom__" {
+					limStr, err = askString("", "limit", "Limit", "", "50", force, nil)
+					if err != nil {
+						return err
+					}
+				}
+				if n, err := strconv.Atoi(limStr); err == nil {
+					limit = n
+				}
+			}
 			db, err := store.Open("")
 			if err != nil {
 				return err

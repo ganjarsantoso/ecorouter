@@ -3,8 +3,10 @@ package cli
 import (
 	"fmt"
 
+	"github.com/charmbracelet/huh"
 	"github.com/ganjar/ecorouter/internal/output"
 	"github.com/ganjar/ecorouter/internal/secrets"
+	"github.com/ganjar/ecorouter/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -14,12 +16,35 @@ func newModelsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "models",
 		Short: "List models across providers",
+		Long: `List models across providers. Use --refresh to re-fetch the catalog
+from each provider.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
 			}
+			force := WizardRequested()
+
 			if refresh {
+				// If no --provider given, on interactive / wizard, offer "all or pick one?"
+				if provider == "" && tui.IsInteractive() {
+					if force || !cmd.Flags().Changed("provider") {
+						choice := "all"
+						if err := tui.SelectString("Refresh which providers?", "",
+							[]huh.Option[string]{
+								huh.NewOption("All providers", "all"),
+								huh.NewOption("Pick one…", "pick"),
+							}, &choice); err == nil && choice == "pick" {
+							picked, err := askPick("", "provider", "Refresh which provider?",
+								"", providerOptions(cfg), force)
+							if err != nil {
+								return err
+							}
+							provider = picked
+						}
+					}
+				}
 				sec, err := secrets.Load("")
 				if err != nil {
 					return err

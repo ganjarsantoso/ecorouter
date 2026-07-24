@@ -6,18 +6,20 @@
 
 *Deploy one binary to a cloud host. Point your agents at one URL with a Bearer token.
 Nothing to install on the client. Automatic fallback. Optional token savings.*
+*Now with a **universal interactive mode** — type any command and be guided step-by-step.*
 
 [![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
 [![Single Binary](https://img.shields.io/badge/deploy-single_binary-brightgreen)]()
 [![Zero Client Install](https://img.shields.io/badge/client-zero_install-orange)]()
+[![Interactive](https://img.shields.io/badge/CLI-interactive_wizards-9cf)]()
 [![Loopback Only](https://img.shields.io/badge/daemon-loopback_only-red)]()
 
 [Quick Start](#-quick-start) •
-[Features](#-features) •
+[Interactive Mode](#-interactive-mode-beginner-first) •
 [Install](#-installation) •
 [CLI Reference](#-cli-reference) •
-[Deployment](#-production-deployment-oci) •
+[Deployment](#-production-deployment) •
 [Security](#-security-model)
 
 </div>
@@ -31,12 +33,15 @@ Nothing to install on the client. Automatic fallback. Optional token savings.*
 - [Architecture](#-architecture)
 - [Features](#-features)
 - [Quick Start](#-quick-start)
+- [Interactive Mode (beginner-first)](#-interactive-mode-beginner-first)
 - [Installation](#-installation)
 - [CLI Reference](#-cli-reference)
+- [Providers & Compatibility](#-providers--compatibility)
 - [Routing Modes](#-routing-modes)
 - [Token Management](#-token-management)
+- [Model Pricing](#-model-pricing)
 - [Token Saving via External Savers](#-token-saving-via-external-savers)
-- [Production Deployment (OCI)](#-production-deployment-oci)
+- [Production Deployment](#-production-deployment)
 - [Security Model](#-security-model)
 - [Observability](#-observability)
 - [Configuration](#-configuration)
@@ -49,7 +54,7 @@ Nothing to install on the client. Automatic fallback. Optional token savings.*
 
 ## 🎯 What is EcoRouter?
 
-EcoRouter is a **self-hosted reverse proxy for LLM API traffic**. You deploy it once to a cloud host (VPS, or locally), and any agent — Claude Code, Codex CLI, Cursor, your own scripts — points its base URL at your EcoRouter endpoint and authenticates with a **Bearer token**.
+EcoRouter is a **self-hosted reverse proxy for LLM API traffic**. You deploy it once to a cloud host (any Linux VPS, OCI, or locally), and any agent — Claude Code, Codex CLI, Cursor, your own scripts — points its base URL at your EcoRouter endpoint and authenticates with a **Bearer token**.
 
 That's it. **No VPN. No tunnel client. No cert to install. No agent on the user's machine.** Just a URL and a token, delivered over standard HTTPS.
 
@@ -58,6 +63,8 @@ EcoRouter's job is narrow and reliable:
 > **Authenticate the caller → pick a model → forward the request → return the response**
 
 …with fallback when a model fails, round-robin when you want to spread load, health-aware circuit breaking, full observability, and an *optional* hop through an external token-saving proxy.
+
+**New in v0.3:** every command is now **interactive**. A complete beginner can type `eco provider add` (or just `eco`) and be walked through it with arrow-key menus — no flags to memorize, no "read the docs" dead-ends. Power users keep full flag-based scripting, unchanged.
 
 ---
 
@@ -74,14 +81,14 @@ No binary to install, no cert to trust, no tunnel to run.
 </td>
 <td width="33%" valign="top">
 
-### 🔒 Secure by default
-TLS everywhere, Argon2id-hashed tokens, per-token rate limits, brute-force lockout, spend caps, IP allow-lists — all enforced server-side.
+### 🧭 Beginner-first CLI
+Type any command bare and get guided prompts. Pickers replace memorizing IDs. Every wizard prints the equivalent flag command so you learn scripting by osmosis.
 
 </td>
 <td width="33%" valign="top">
 
-### 🎯 Terminal-first
-One binary, one `systemd` unit, one Caddyfile. Manage everything over SSH with a guessable `eco <noun> <verb>` grammar.
+### 🔒 Secure by default
+TLS everywhere, Argon2id-hashed tokens, per-token rate limits, brute-force lockout, spend caps, IP allow-lists — all enforced server-side.
 
 </td>
 </tr>
@@ -94,14 +101,14 @@ Single / fallback / round-robin. Same input + same state ⇒ same decision. No b
 </td>
 <td width="33%" valign="top">
 
-### 💰 Optional token savings
-Plug in any OpenAI/Anthropic-compatible saver proxy (headroom, caveman-proxy) with one flag. EcoRouter never mutates payloads itself.
+### 🔌 No hardcoding
+No built-in provider list, no baked-in URLs, no fixed prices. You configure every provider, base URL, model, and price. Works with *any* OpenAI/Anthropic-compatible API.
 
 </td>
 <td width="33%" valign="top">
 
-### 📊 Honest observability
-Every request logged with tokens, latency, cost. Unknown-priced models show as *unpriced* — never a fake `$0`.
+### 💰 Optional token savings
+Plug in any OpenAI/Anthropic-compatible saver proxy (headroom, caveman-proxy) with one flag. EcoRouter never mutates payloads itself.
 
 </td>
 </tr>
@@ -112,7 +119,7 @@ Every request logged with tokens, latency, cost. Unknown-priced models show as *
 ## 🏗️ Architecture
 
 ```
-    Anywhere on the internet                    Your host (OCI / any Linux VPS)
+    Anywhere on the internet                    Your host (any Linux VPS / OCI)
   ┌──────────────────────────┐              ┌─────────────────────────────────────────┐
   │                          │              │                                          │
   │   Laptop / CI / phone    │              │   ┌─────────────────────────────────┐   │
@@ -132,12 +139,12 @@ Every request logged with tokens, latency, cost. Unknown-priced models show as *
                                             │            │               │              │
                                             │            ▼               ▼              │
                                             │     [optional saver]   provider APIs      │
-                                            │     127.0.0.1:8787       (openai,         │
-                                            │     headroom /            anthropic,      │
-                                            │     caveman-proxy)        ollama, ...)    │
+                                            │     127.0.0.1:8787       (any OpenAI /     │
+                                            │     headroom /            Anthropic-       │
+                                            │     caveman-proxy)        compatible)      │
                                             │                                            │
                                             └─────────────────────────────────────────────┘
-                                            
+
                                             Firewall: only 443 + 22 open.
                                             8080 is loopback — never exposed.
 ```
@@ -152,12 +159,29 @@ Every request logged with tokens, latency, cost. Unknown-priced models show as *
 
 ## ✨ Features
 
+### Interactive CLI (v0.3)
+- ✅ **Run `eco` with no args** → arrow-key main menu
+- ✅ **Every command is interactive** — type it bare and get guided prompts
+- ✅ **`--wizard` / `-w` on any command** → force full step-by-step guidance
+- ✅ **Partial-flag gap filling** — pass what you know, get prompted for the rest
+- ✅ **Pickers everywhere** — revoke a token, switch a route, remove a provider without knowing IDs
+- ✅ **"Equivalent command" printed** after every guided action, so you learn the flag form
+- ✅ **TTY-gated** — pipes / CI / systemd never hang; missing input → a clear error naming the flag
+
 ### Routing
 - ✅ **Single** model routes
 - ✅ **Fallback** chains (try model A, then B, then C on failure)
 - ✅ **Round-robin** rotation (deterministic, skips unhealthy models)
 - ✅ **Circuit breaker** — auto-skips models with high error rates
 - ✅ **Streaming (SSE) aware** — no fallback after first byte (correctness > cost)
+
+### Providers (no hardcoding)
+- ✅ Add **any** OpenAI-compatible provider (OpenAI, DeepSeek, Groq, OpenRouter, Together, xAI, Mistral, LM Studio, vLLM, llama.cpp, …)
+- ✅ Add **any** Anthropic-compatible provider
+- ✅ Local models via **no-auth** providers (Ollama, LM Studio)
+- ✅ Auth style chosen explicitly: `--auth bearer | anthropic-key | none`
+- ✅ **No baked-in base URLs** — you paste the URL from the provider's docs
+- ✅ Live model-catalog fetch + multi-select which models to enable
 
 ### Security
 - ✅ Bearer tokens with `eco_live_` prefix (leak-scanner friendly)
@@ -166,8 +190,7 @@ Every request logged with tokens, latency, cost. Unknown-priced models show as *
 - ✅ Global rate limit + global daily spend cap
 - ✅ **Brute-force lockout** with configurable window/ban
 - ✅ Optional **IP allow/deny CIDR lists**
-- ✅ TLS-only (delegated to Caddy)
-- ✅ HSTS, `X-Content-Type-Options`, minimal CORS
+- ✅ TLS-only (delegated to Caddy), HSTS, `X-Content-Type-Options`, minimal CORS
 - ✅ Request body size cap
 - ✅ Loopback-only daemon (no `--expose` flag exists, by design)
 
@@ -181,38 +204,42 @@ Every request logged with tokens, latency, cost. Unknown-priced models show as *
 - ✅ SQLite activity store: token · IP · route · model · tokens · latency · cost · status
 - ✅ Security audit log: auth failures, lockouts, revocations, rate/spend hits
 - ✅ Rollups by day / model / route / token
-- ✅ **Cost estimation** from user-editable `pricing.toml` — unknown models render as *unpriced*
+- ✅ **Cost estimation** from a user-editable `pricing.toml` — unknown models render as *unpriced*
 - ✅ `--json` on every read command for scripting
 
 ### Operational
-- ✅ **Interactive main menu** — run `eco` with no args on a TTY
 - ✅ **`eco init` wizard** — menu-driven setup from fresh host to live endpoint
-- ✅ **`eco doctor`** — diagnoses config, DNS, ports, providers, savers, health, pricing
-- ✅ **Non-interactive mode** on every command for CI/scripting
+- ✅ **`eco doctor`** — diagnoses config, DNS, ports, providers, savers, health, **pricing**
+- ✅ **Non-interactive mode** on every command for CI/scripting (`ECO_NONINTERACTIVE=1`)
 - ✅ Shell completions (bash / zsh / fish)
 - ✅ Single **static binary**, no CGO (pure-Go SQLite)
+- ✅ **Cross-platform** — Linux, macOS, Windows (platform-specific process handling)
 - ✅ `systemd` service + Caddyfile shipped in `deploy/`
-- ✅ One-shot **OCI provisioning script** in `scripts/install-oci.sh`
+- ✅ One-shot **provisioning script** in `scripts/install-oci.sh`
 
 ---
 
 ## 🚀 Quick Start
 
-> **New!** Just run `eco` with no arguments to open an interactive menu. Every
-> command is available as arrow-key choices, and every choice prints the
-> equivalent flag command so you can script it later.
+> **New!** Every command is interactive. Type any `eco <noun> <verb>` with no
+> arguments on a terminal and EcoRouter guides you step-by-step — no more flag
+> errors. Power users can still pass all flags for scripts.
 
-### Interactive mode
+### Interactive (beginner-friendly)
 
 ```bash
 make build && export PATH="$PWD/bin:$PATH"
 export ECO_HOME="$PWD/.data"
 
-eco   # opens the main menu on a TTY
+eco                     # main menu on a TTY
+eco provider add        # guided setup for a new provider
+eco token revoke        # picker shows your tokens — no need to remember ids
+eco use                 # picker shows your routes
+eco config set          # pick a key, get a typed value prompt
 ```
 
-From the menu you can set up providers (paste any base URL — nothing is hardcoded),
-create routes, issue tokens, start the daemon, and edit model prices.
+Add `--wizard` to any command to force full guidance even with some flags set.
+Add `--yes` to destructive commands (`remove`, `revoke`, `clear`, `rotate`) to skip confirmation.
 
 ### 60-second local demo (scriptable)
 
@@ -220,17 +247,17 @@ create routes, issue tokens, start the daemon, and edit model prices.
 # 1. Build
 make build
 export PATH="$PWD/bin:$PATH"
-export ECO_HOME="$PWD/.data"     # local data dir (default: ~/.ecorouter)
+export ECO_HOME="$PWD/.data"          # local data dir (default: ~/.ecorouter)
 
-# 2. Non-interactive init
+# 2. Non-interactive init (base URL is REQUIRED — no hardcoded defaults)
 eco init --yes \
-  --provider-name     openai \
-  --provider-auth     bearer \
+  --provider-name    openai \
+  --provider-auth    bearer \
   --provider-base-url https://api.openai.com/v1 \
-  --provider-key      "$OPENAI_API_KEY" \
-  --route-mode        single \
-  --route-models      gpt-4o-mini \
-  --token-label       laptop
+  --provider-key     "$OPENAI_API_KEY" \
+  --route-mode       single \
+  --route-models     gpt-4o-mini \
+  --token-label      laptop
 
 #   → prints your token ONCE:  eco_live_9f2a…
 
@@ -252,9 +279,92 @@ curl "$OPENAI_BASE_URL/chat/completions" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-> `--type` / `--provider-type` still work as hidden aliases for backward compatibility.
+> `--type` / `--provider-type` still work as **hidden aliases** for backward compatibility.
 
-That's the whole flow. For production (HTTPS + public access), see [Production Deployment](#-production-deployment-oci).
+For production (HTTPS + public access), see [Production Deployment](#-production-deployment).
+
+---
+
+## 🧭 Interactive Mode (beginner-first)
+
+Every command follows the **same rule**, so you learn it once:
+
+> **Missing input + terminal → prompt. All flags present → run silently. `--wizard` → guide everything. No terminal (CI/pipe) → clear error, never a hang.**
+
+### The behavior matrix
+
+| You type | On a terminal | In CI (`ECO_NONINTERACTIVE=1` / pipe) |
+|---|---|---|
+| `eco provider add` | Wizard walks you through every field | Error: `missing --name` (no hang) |
+| `eco provider add openrouter` | Asks for URL + key (name is known) | Error: `missing --base-url` |
+| `eco provider add openrouter --base-url https://…` | Asks only for the key | Error: `missing --key` |
+| `eco provider add openrouter --base-url … --key $K --auth bearer` | Silent, no prompt | Silent, no prompt |
+| `eco provider add … --wizard` | Walks through ALL steps, prefilled | Error (cannot prompt, no hang) |
+| `eco token revoke` | **Picker** shows tokens — no ids to remember | Error: `missing --id` |
+| `eco token revoke tok_abc --yes` | Silent, no prompt | Silent, no prompt |
+| `eco route add` (no flags) | Wizard: name → mode → models | Error: `missing --name` |
+| `eco use` | **Picker** of routes | Error: `missing --route` |
+
+### Example — bare command becomes a guided flow
+
+```
+$ eco provider add
+
+  🔌  Add a provider
+
+  How does this provider authenticate?
+  ❯ 🔑  Bearer token in Authorization header
+    🗝️   x-api-key header
+    🚫  No authentication
+
+  Give this provider a name
+  › openrouter
+
+  Base URL  (copy from the provider's docs, include /v1)
+  › https://openrouter.ai/api/v1
+
+  API key (hidden)
+  › ••••••••••••••••
+
+  ⏳ Testing… ✓ Found 147 models.
+
+  Which models do you want available?  (Space to toggle, Enter = all)
+  [x] gpt-4o
+  [x] claude-3-5-sonnet
+  [ ] llama-3.3-70b
+  …
+
+  ✓ Provider "openrouter" added — 2 models enabled.
+
+    Equivalent command:
+      eco provider add openrouter \
+        --auth bearer \
+        --base-url https://openrouter.ai/api/v1 \
+        --key $KEY \
+        --models "gpt-4o,claude-3-5-sonnet"
+```
+
+### Example — picker instead of memorizing an ID
+
+```
+$ eco token revoke
+
+  Which token do you want to revoke?
+  ❯ alice-laptop   (tok_a1b2, active)
+    ci             (tok_c3d4, active)
+    old-demo       (tok_e5f6, active)
+
+  Revoke "alice-laptop" (tok_a1b2)?
+  This immediately stops the token from working.
+  ❯ Yes
+    No
+
+  ✓ Token tok_a1b2 revoked.
+```
+
+### Disabling interactivity
+
+Set `ECO_NONINTERACTIVE=1` (or run in a non-TTY like a pipe or systemd) to force strict flag mode — missing input becomes a clear error instead of a prompt. This is what makes CI safe.
 
 ---
 
@@ -283,7 +393,7 @@ make release                  # produces:
 sudo DOMAIN=eco.you.dev BINARY_SRC=./bin/eco ./scripts/install-oci.sh
 ```
 
-This creates the `ecorouter` system user, `/etc/ecorouter/`, `/var/lib/ecorouter/`, installs the `systemd` unit, and writes a Caddyfile if `caddy` is present.
+Creates the `ecorouter` system user, `/etc/ecorouter/`, `/var/lib/ecorouter/`, installs the `systemd` unit, and writes a Caddyfile if `caddy` is present.
 
 **Requirements:** Go 1.22+ (for building), Linux/macOS/Windows for the binary. No CGO needed.
 
@@ -292,19 +402,21 @@ This creates the `ecorouter` system user, `/etc/ecorouter/`, `/var/lib/ecorouter
 ## 🎮 CLI Reference
 
 Grammar: **`eco <noun> <verb> [args] [flags]`** — two levels deep, guessable, tab-completable.
+**Every mutating command** takes its primary identifier as an *optional positional arg* and prompts for anything missing.
 
 <details>
 <summary><b>🚦 Lifecycle & health</b></summary>
 
 | Command | Description |
 |---|---|
-| `eco init` | Interactive first-run wizard (or fully non-interactive via `--yes` + flags) |
-| `eco doctor` | Diagnose config, DNS, ports, providers, savers, tokens, health |
+| `eco` | Open the interactive main menu (on a TTY) |
+| `eco init` | First-run wizard (or fully non-interactive via `--yes` + flags) |
+| `eco doctor` | Diagnose config, DNS, ports, providers, savers, tokens, health, pricing |
 | `eco status` | Daemon status, domain, active route, saver default |
 | `eco version` | Version, commit, build date, Go version |
-| `eco start [-d] [--port N] [--domain FQDN]` | Start the daemon (loopback only) |
+| `eco start [-d] [--port N] [--domain FQDN]` | Start the daemon (loopback only). `--wizard` prompts for port/domain |
 | `eco stop` / `eco restart` | Lifecycle control |
-| `eco logs [-f]` | View / tail server logs |
+| `eco logs [-f]` | View / follow server logs (prompts view-vs-follow on a TTY) |
 | `eco completion <shell>` | Emit bash / zsh / fish completion script |
 
 </details>
@@ -314,12 +426,12 @@ Grammar: **`eco <noun> <verb> [args] [flags]`** — two levels deep, guessable, 
 
 | Command | Description |
 |---|---|
-| `eco provider add <name>` | Add provider. Prompts for API key (hidden) or `--key $KEY`. Requires `--base-url`. Auth via `--auth bearer\|anthropic-key\|none` (`--type` is a hidden legacy alias) |
-| `eco pricing set <provider>/<model> --in N --out N` | Set USD per-1M-token prices in `pricing.toml` |
-| `eco pricing list` / `eco pricing remove <key>` | List / remove price entries |
-| `eco provider list` | List providers with health dot. `--json` |
-| `eco provider test <name>` | Live connectivity + auth check, refreshes model catalog |
-| `eco provider remove <name>` | Remove provider and purge its secret |
+| `eco provider add [name]` | Add a provider. Prompts for auth style, name, base URL, API key. `--auth bearer\|anthropic-key\|none`, `--base-url`, `--key`, `--models` |
+| `eco provider list` | List providers with health dot + auth style. `--json` |
+| `eco provider test [name]` | Live connectivity + auth check (picker if no name). Refreshes catalog |
+| `eco provider remove [name]` | Remove provider + purge secret (picker + confirm) |
+
+> `--type openai\|anthropic\|ollama` is a **hidden deprecated alias** for `--auth bearer\|anthropic-key\|none`.
 
 </details>
 
@@ -330,7 +442,7 @@ Grammar: **`eco <noun> <verb> [args] [flags]`** — two levels deep, guessable, 
 |---|---|
 | `eco models` | List every model across providers. `--json` |
 | `eco models --provider <name>` | Filter to one provider |
-| `eco models --refresh` | Re-fetch catalogs from providers |
+| `eco models --refresh` | Re-fetch catalogs (prompts "all or pick one?" on a TTY) |
 
 </details>
 
@@ -339,17 +451,19 @@ Grammar: **`eco <noun> <verb> [args] [flags]`** — two levels deep, guessable, 
 
 | Command | Description |
 |---|---|
-| `eco route add <name> --single <model>` | Single-model route |
-| `eco route add <name> --fallback m1,m2,...` | Fallback route (ordered) |
-| `eco route add <name> --round m1,m2,...` | Round-robin route |
+| `eco route add [name] --single <model>` | Single-model route |
+| `eco route add [name] --fallback m1,m2,...` | Fallback route (ordered) |
+| `eco route add [name] --round m1,m2,...` | Round-robin route |
 | `eco route add ... --via <saver>` | Attach a saver hop |
 | `eco route add ... --no-via` | Bypass the global default saver for this route |
 | `eco route add ... --via-required` | Fail if saver unreachable (default: bypass silently) |
 | `eco route list` | List routes with mode, models, saver. `--json` |
-| `eco route show <name>` | Full detail |
-| `eco route remove <name>` | Delete a route |
-| `eco route test <name>` | Dry-run: which model would be selected now, and why |
-| `eco use <route>` | Set the active/default route |
+| `eco route show [name]` | Full detail (picker if no name) |
+| `eco route remove [name]` | Delete a route (picker + confirm) |
+| `eco route test [name]` | Dry-run: which model would be selected now, and why (picker if no name) |
+| `eco use [route]` | Set the active/default route (picker if no route) |
+
+> Bare `eco route add` runs a full wizard: name → mode → multi-select models → optional saver.
 
 </details>
 
@@ -358,7 +472,7 @@ Grammar: **`eco <noun> <verb> [args] [flags]`** — two levels deep, guessable, 
 
 | Command | Description |
 |---|---|
-| `eco token new "<label>"` | Generate a Bearer token. **Printed once**, only Argon2id hash stored |
+| `eco token new [label]` | Generate a Bearer token. **Printed once**. Wizard prompts: label, route scope, rate, daily cap, concurrency, expiry, model scope |
 | `eco token new ... --route <name>` | Scope to a single route |
 | `eco token new ... --models a,b` | Scope to specific models |
 | `eco token new ... --expires 90d` | Set expiry (`90d`, `24h`, `30m`, or blank/`never`) |
@@ -366,9 +480,22 @@ Grammar: **`eco <noun> <verb> [args] [flags]`** — two levels deep, guessable, 
 | `eco token new ... --daily-cap 5` | Daily USD spend cap |
 | `eco token new ... --concurrency 2` | Max concurrent in-flight requests |
 | `eco token list` | List tokens (never the secret). `--json` |
-| `eco token rotate <id>` | Issue a new secret; old one invalidated |
-| `eco token revoke <id>` | Instantly revoke |
-| `eco token scope <id> --route ... --models ...` | Adjust scope after creation |
+| `eco token rotate [id]` | Issue a new secret; old one invalidated (picker + confirm) |
+| `eco token revoke [id]` | Instantly revoke (picker + confirm) |
+| `eco token scope [id] --route ... --models ...` | Adjust scope after creation (picker if no id) |
+
+</details>
+
+<details>
+<summary><b>💰 Pricing (model cost estimates)</b></summary>
+
+| Command | Description |
+|---|---|
+| `eco pricing set [key] --in N --out N` | Set USD per-1M-token prices (`key` = `provider/model`). Wizard: provider → model → prices |
+| `eco pricing list` | List all configured prices. `--json` |
+| `eco pricing remove [key]` | Remove a price entry (picker + confirm) |
+
+Prices live in a user-editable `pricing.toml`. There is **no built-in price table** — unknown models render as *unpriced*.
 
 </details>
 
@@ -377,10 +504,10 @@ Grammar: **`eco <noun> <verb> [args] [flags]`** — two levels deep, guessable, 
 
 | Command | Description |
 |---|---|
-| `eco access allow <cidr>` | Restrict endpoint to given CIDR(s) |
-| `eco access deny <cidr>` | Block CIDR(s) |
+| `eco access allow [cidr]` | Restrict endpoint to given CIDR(s) (prompts if no cidr) |
+| `eco access deny [cidr]` | Block CIDR(s) |
 | `eco access list` | Show current rules |
-| `eco access clear` | Return to open (anywhere) access |
+| `eco access clear` | Return to open (anywhere) access (confirm) |
 
 Empty allow list = open. Deny always applies.
 
@@ -391,11 +518,11 @@ Empty allow list = open. Deny always applies.
 
 | Command | Description |
 |---|---|
-| `eco saver add <name> --url <base-url>` | Register an external saver proxy |
+| `eco saver add [name] --url <base-url>` | Register an external saver proxy (wizard prompts name + URL) |
 | `eco saver list` | List with reachability. `--json` |
-| `eco saver test <name>` | Round-trip check |
-| `eco saver default <name>` | Route all traffic through this saver unless a route sets `--no-via` |
-| `eco saver remove <name>` | Unregister |
+| `eco saver test [name]` | Round-trip check (picker if no name) |
+| `eco saver default [name]` | Route all traffic through this saver unless a route sets `--no-via` |
+| `eco saver remove [name]` | Unregister (picker + confirm) |
 
 </details>
 
@@ -404,10 +531,10 @@ Empty allow list = open. Deny always applies.
 
 | Command | Description |
 |---|---|
-| `eco activity` | Recent requests: token, IP, route, model, tokens, latency, cost, status |
+| `eco activity` | Recent requests: token, IP, route, model, tokens, latency, cost, status. `--wizard` prompts window + token filter |
 | `eco activity --since 1h` | Time-filtered (`1h`, `24h`, `7d`) |
 | `eco activity --token <id>` | Filter to one token |
-| `eco stats` | Rollups |
+| `eco stats` | Rollups. `--wizard` prompts group + window |
 | `eco stats --by <route\|model\|token\|day>` | Group dimension |
 | `eco stats --since 24h` | Time window |
 | `eco audit` | Security view: auth failures, lockouts, rate/spend hits, revocations |
@@ -420,7 +547,7 @@ Empty allow list = open. Deny always applies.
 | Command | Description |
 |---|---|
 | `eco config show` | Print effective config (secrets redacted). `--json` |
-| `eco config set <key> <value>` | Set `domain`, `port`, `global_rate`, `global_daily_cap`, `timeout_ms` |
+| `eco config set [key] [value]` | Set `domain`, `port`, `global_rate`, `global_daily_cap`, `timeout_ms` (menu if no key) |
 
 </details>
 
@@ -428,12 +555,57 @@ Empty allow list = open. Deny always applies.
 
 | Flag | Effect |
 |---|---|
+| `-w, --wizard` | Force interactive guidance for the current command |
 | `--json` | Machine-readable output (read commands) |
 | `--config <path>` | Alternate config file |
 | `--no-color` | Disable ANSI color |
 | `-q, --quiet` | Suppress non-essential output |
 | `-v, --verbose` | Extra diagnostic output |
 | `-h, --help` | Contextual help |
+
+> Destructive commands (`remove`, `revoke`, `clear`, `rotate`) also accept `-y, --yes` to skip confirmation.
+
+---
+
+## 🔌 Providers & Compatibility
+
+EcoRouter has **no hardcoded provider list and no baked-in URLs**. The `--auth` flag selects the *authentication style*, and you supply the base URL — so any compatible API works.
+
+| `--auth` value | Header sent | Works with |
+|---|---|---|
+| `bearer` | `Authorization: Bearer <key>` | OpenAI, DeepSeek, Groq, OpenRouter, Together, xAI, Mistral, Fireworks, Perplexity, LM Studio, vLLM, llama.cpp server, … |
+| `anthropic-key` | `x-api-key: <key>` + `anthropic-version` | Anthropic and Anthropic-compatible gateways |
+| `none` | *(no auth header)* | Local models: Ollama, LM Studio |
+
+### Examples
+
+```bash
+# OpenAI
+eco provider add openai --auth bearer \
+  --base-url https://api.openai.com/v1 --key $OPENAI_API_KEY
+
+# DeepSeek
+eco provider add deepseek --auth bearer \
+  --base-url https://api.deepseek.com/v1 --key $DEEPSEEK_API_KEY
+
+# OpenRouter
+eco provider add openrouter --auth bearer \
+  --base-url https://openrouter.ai/api/v1 --key $OPENROUTER_API_KEY
+
+# Groq
+eco provider add groq --auth bearer \
+  --base-url https://api.groq.com/openai/v1 --key $GROQ_API_KEY
+
+# Anthropic
+eco provider add anthropic --auth anthropic-key \
+  --base-url https://api.anthropic.com/v1 --key $ANTHROPIC_API_KEY
+
+# Local Ollama (no auth)
+eco provider add ollama --auth none \
+  --base-url http://127.0.0.1:11434/v1
+```
+
+Models are referenced as `provider/model` in routes (e.g. `openrouter/gpt-4o`), which lets the same model name coexist across providers.
 
 ---
 
@@ -452,7 +624,7 @@ Empty allow list = open. Deny always applies.
 <td>
 
 ```bash
-eco route add cheap --single gpt-4o-mini
+eco route add cheap --single openai/gpt-4o-mini
 ```
 
 </td>
@@ -460,12 +632,12 @@ eco route add cheap --single gpt-4o-mini
 
 <tr>
 <td valign="top"><b>Fallback</b></td>
-<td valign="top">Try model 1. On <code>5xx</code>, <code>429</code>, timeout, or connection failure, try model 2, then 3. First success wins.<br><br><b>Important:</b> A <code>4xx</code> other than <code>429</code> is <b>not</b> retried — that's a client/config error, retrying would hide the real problem.</td>
+<td valign="top">Try model 1. On <code>5xx</code>, <code>429</code>, timeout, or connection failure, try model 2, then 3. First success wins.<br><br><b>Important:</b> A <code>4xx</code> other than <code>429</code> is <b>not</b> retried — that's a client/config error; retrying would hide the real problem.</td>
 <td>
 
 ```bash
 eco route add solid \
-  --fallback gpt-4o,gpt-4o-mini,claude-3-5-sonnet
+  --fallback openai/gpt-4o,openai/gpt-4o-mini
 ```
 
 </td>
@@ -478,7 +650,7 @@ eco route add solid \
 
 ```bash
 eco route add balanced \
-  --round gpt-4o,claude-3-5-sonnet
+  --round openai/gpt-4o,anthropic/claude-3-5-sonnet
 ```
 
 </td>
@@ -491,7 +663,7 @@ eco route add balanced \
 
 ```bash
 eco route add cost-optimized \
-  --fallback gpt-4o,gpt-4o-mini \
+  --fallback openai/gpt-4o,openai/gpt-4o-mini \
   --via headroom
 ```
 
@@ -520,17 +692,14 @@ eco token new "my-laptop" --expires 90d --rate 60/min
 # CI pipeline — scoped to one route, one model, capped spend
 eco token new "ci" \
   --route      default \
-  --models     gpt-4o-mini \
+  --models     openai/gpt-4o-mini \
   --rate       30/min \
   --concurrency 2 \
   --daily-cap  5 \
   --expires    90d
 
-# Teammate — read-only route, low limits
-eco token new "alice" \
-  --route      cheap-chat \
-  --rate       20/min \
-  --daily-cap  1
+# Or just run it interactively:
+eco token new         # prompts: label → route → rate → cap → concurrency → expiry
 ```
 
 Output shows the plaintext **once**:
@@ -546,13 +715,13 @@ Output shows the plaintext **once**:
   Max concurrent:  2
 ```
 
-### Manage
+### Manage (all support pickers)
 
 ```bash
 eco token list                 # never shows secrets
-eco token rotate tok_abc       # new secret, same scope
-eco token revoke tok_abc       # instant kill
-eco token scope tok_abc --route different-route
+eco token rotate               # picker → confirm → new secret, same scope
+eco token revoke               # picker → confirm → instant kill
+eco token scope                # picker → route + model multi-select
 ```
 
 ### Global controls
@@ -564,7 +733,40 @@ eco config set global_daily_cap  50
 
 ---
 
-## 💰 Token Saving via External Savers
+## 💰 Model Pricing
+
+Cost estimates come from a **user-editable** file at `$ECO_HOME/pricing.toml` (default `~/.ecorouter/pricing.toml`). There is **no built-in price table** — anything unset renders as *unpriced* (never a fake `$0`).
+
+### Set prices
+
+```bash
+# Scriptable
+eco pricing set openai/gpt-4o      --in 2.50 --out 10.00
+eco pricing set openai/gpt-4o-mini --in 0.15 --out 0.60
+eco pricing list
+eco pricing remove openai/gpt-4o-mini
+
+# Or interactively
+eco pricing set        # provider picker → model multi-select → in/out prompts
+```
+
+### `pricing.toml` format
+
+```toml
+[prices."openai/gpt-4o"]
+input_per_1m  = 2.50
+output_per_1m = 10.00
+
+[prices."openai/gpt-4o-mini"]
+input_per_1m  = 0.15
+output_per_1m = 0.60
+```
+
+Matching is: exact `provider/model` → bare `model` → prefix (so `gpt-4o` covers `gpt-4o-2024-11-20`). `eco doctor` warns if no pricing file exists.
+
+---
+
+## 💾 Token Saving via External Savers
 
 EcoRouter **never compresses payloads itself**. Instead, it optionally forwards traffic through an external, OpenAI/Anthropic-compatible saver proxy chosen by the operator:
 
@@ -586,25 +788,15 @@ client ──HTTPS──▶ Caddy ──▶ EcoRouter ──▶ [saver hop] ─�
 ### Setup
 
 ```bash
-# 1. Start the saver locally (loopback)
-headroom proxy --port 8787 &
-
-# 2. Register it
-eco saver add headroom --url http://127.0.0.1:8787
+headroom proxy --port 8787 &                          # 1. start the saver (loopback)
+eco saver add headroom --url http://127.0.0.1:8787    # 2. register it
 eco saver test headroom
 
-# 3a. Attach to one route only
-eco route add cost-optimized \
-  --fallback gpt-4o,gpt-4o-mini \
-  --via headroom
+eco route add cost-optimized \                        # 3a. attach to one route
+  --fallback openai/gpt-4o,openai/gpt-4o-mini --via headroom
 
-# 3b. — OR — make it the global default
-eco saver default headroom
-
-# 3c. Bypass on specific routes (audit trail must stay pristine)
-eco route add audit \
-  --single gpt-4o \
-  --no-via
+eco saver default headroom                            # 3b. — OR — global default
+eco route add audit --single openai/gpt-4o --no-via   # 3c. bypass where needed
 ```
 
 ### Reliability
@@ -614,7 +806,7 @@ eco route add audit \
 
 ---
 
-## 🌐 Production Deployment (OCI)
+## 🌐 Production Deployment
 
 ### Topology
 
@@ -638,15 +830,14 @@ eco route add audit \
 ### Deploy
 
 ```bash
-# On the OCI host (Ubuntu ARM64 or similar)
-git clone <your-repo>/ecorouter && cd ecorouter
+git clone https://github.com/ganjarsantoso/ecorouter && cd ecorouter
 make build
 
 # Provision: creates ecorouter user, /etc/ecorouter, /var/lib/ecorouter,
 # installs systemd unit, writes Caddyfile if caddy present.
 sudo DOMAIN=eco.you.dev BINARY_SRC=./bin/eco ./scripts/install-oci.sh
 
-# Configure providers/routes/tokens as the service user
+# Configure as the service user (base URL is required — no hardcoded defaults)
 sudo -u ecorouter env \
   ECO_HOME=/var/lib/ecorouter \
   ECO_CONFIG=/etc/ecorouter/config.toml \
@@ -657,7 +848,7 @@ sudo -u ecorouter env \
     --provider-base-url https://api.openai.com/v1 \
     --provider-key "$OPENAI_API_KEY" \
     --route-mode fallback \
-    --route-models gpt-4o,gpt-4o-mini
+    --route-models openai/gpt-4o,openai/gpt-4o-mini
 
 sudo systemctl start ecorouter
 eco doctor
@@ -725,7 +916,7 @@ EcoRouter assumes it's on the open internet. Security lives in **three layers** 
 | Scoping | Per-token route + model whitelist |
 | Expiry & rotation | Optional expiry (`90d`, `24h`, …); rotate with a single command |
 | Revocation | Instant kill; revoked tokens fail immediately |
-| No default token | Ships with **zero** valid tokens — operator must create first one |
+| No default token | Ships with **zero** valid tokens — operator must create the first |
 
 ### Layer 3 — Abuse resistance
 
@@ -768,7 +959,6 @@ $ eco activity --since 1h
 
 TIME      TOKEN     IP              ROUTE    MODEL         TOK IN/OUT  LAT   STATUS  COST
 14:22:11  laptop    203.0.113.9     default  gpt-4o-mini   183 / 47    412ms 200     $0.0001
-14:22:37  laptop    203.0.113.9     default  gpt-4o-mini   211 / 89    380ms 200     $0.0001
 14:23:02  ci        198.51.100.4    default  gpt-4o-mini   1024 / 512  692ms 200     $0.0005
 14:23:44  laptop    203.0.113.9     default  gpt-4o        892 / 245   1.2s  200     $0.0047
 14:24:19  laptop    203.0.113.9     default  local-llama   150 / 60    98ms  200     unpriced
@@ -791,12 +981,11 @@ local-llama   89     12,443    4,891     102     0
 $ eco audit --limit 10
 
 TIME                       EVENT              IP              TOKEN     DETAIL
-2026-07-23T02:18:44Z       auth_fail          203.0.113.9     -         invalid token
-2026-07-23T02:18:47Z       auth_fail          203.0.113.9     -         invalid token
-2026-07-23T02:18:50Z       lockout            203.0.113.9     -         IP banned 15m
-2026-07-23T01:44:12Z       token_revoke       -               tok_abc   revoked
-2026-07-23T01:12:03Z       rate_limit         198.51.100.4    tok_ci    token rate exceeded
-2026-07-23T00:55:41Z       spend_cap          198.51.100.4    tok_ci    daily USD cap reached
+2026-07-24T02:18:44Z       auth_fail          203.0.113.9     -         invalid token
+2026-07-24T02:18:50Z       lockout            203.0.113.9     -         IP banned 15m
+2026-07-24T01:44:12Z       token_revoke       -               tok_abc   revoked
+2026-07-24T01:12:03Z       rate_limit         198.51.100.4    tok_ci    token rate exceeded
+2026-07-24T00:55:41Z       spend_cap          198.51.100.4    tok_ci    daily USD cap reached
 ```
 
 ### JSON everywhere
@@ -835,13 +1024,13 @@ allow = []
 deny  = []
 
 [providers.openai]
-type     = "openai"
+type     = "openai"                  # internal auth style (bearer)
 base_url = "https://api.openai.com/v1"
 # key stored in secrets, referenced by name — NEVER here
 
 [routes.default]
 mode         = "fallback"
-models       = ["gpt-4o", "gpt-4o-mini"]
+models       = ["openai/gpt-4o", "openai/gpt-4o-mini"]
 via          = ""
 via_required = false
 
@@ -859,21 +1048,7 @@ min_requests    = 5
 cooldown_ms     = 60000
 ```
 
-### Pricing (`pricing.toml`)
-
-Model cost estimates come from a user-editable file at `$ECO_HOME/pricing.toml`
-(default `~/.ecorouter/pricing.toml`). There is no built-in price table.
-
-```bash
-# Scriptable
-eco pricing set openai/gpt-4o-mini --in 0.15 --out 0.60
-eco pricing list
-eco pricing remove openai/gpt-4o-mini
-
-# Or via the interactive menu: eco → Providers → Set / edit model pricing
-```
-
-Unknown models always render as **unpriced** (never a fake `$0`).
+> The on-disk `type` field keeps internal values (`openai` / `anthropic` / `ollama`) for compatibility; the user-facing flag is `--auth bearer|anthropic-key|none`.
 
 ### File layout
 
@@ -882,6 +1057,7 @@ Unknown models always render as **unpriced** (never a fake `$0`).
 /var/lib/ecorouter/
 ├── secrets.toml                 0600, service-user owned (provider API keys)
 ├── ecorouter.db                 SQLite: tokens, activity, audit
+├── pricing.toml                 User-editable model prices
 ├── eco.pid                      Daemon PID
 ├── eco.log                      Server log
 └── Caddyfile.snippet            Generated by `eco init` for copy-paste
@@ -948,16 +1124,9 @@ curl https://eco.you.dev/v1/chat/completions \
 # Requires: Go 1.22+
 git clone https://github.com/ganjarsantoso/ecorouter && cd ecorouter
 
-# Build (pure Go, no CGO)
-make build                    # → bin/eco
-
-# Run tests
-make test
-
-# Install to /usr/local/bin
-sudo make install
-
-# Cross-compile for release
+make build                    # → bin/eco  (pure Go, CGO_ENABLED=0)
+make test                     # run all tests
+sudo make install             # → /usr/local/bin/eco
 make release                  # linux-amd64, linux-arm64, windows-amd64
 ```
 
@@ -966,44 +1135,47 @@ make release                  # linux-amd64, linux-arm64, windows-amd64
 | Concern | Library |
 |---|---|
 | CLI framework | `spf13/cobra` |
-| Config | `BurntSushi/toml` |
-| HTTP proxy | stdlib `net/http` + `httputil` |
+| Interactive prompts | `charmbracelet/huh` |
+| Config / secrets / pricing | `BurntSushi/toml` |
+| HTTP proxy | stdlib `net/http` |
 | SQLite | `modernc.org/sqlite` (pure Go — keeps single-binary story) |
 | Token hashing | `golang.org/x/crypto/argon2` |
 | Rate limiting | `golang.org/x/time/rate` |
-| Terminal color | `fatih/color` |
-| Password input | `golang.org/x/term` |
+| Terminal color / input | `fatih/color`, `golang.org/x/term` |
 
----
+Project layout:
 
-## 🗺️ Roadmap
-
-| Version | Focus |
-|---|---|
-| **v0.1** *(current)* | Core proxy, all four route modes, Bearer-token auth, rate/spend/access controls, observability, savers, `eco init` wizard |
-| **v0.2** | Token prefix lookup (avoid Argon2 scan on every auth); persist lockout state across restarts; SSE streaming test coverage |
-| **v1.1** | `--round-fallback`, response cache with TTL, webhook alerting, TLS cert probe in `eco doctor`, TOML-driven price table |
-| **v2.0** *(exploratory)* | Cross-provider payload translation (OpenAI ↔ Anthropic shape); multi-operator roles |
-
-**Explicitly deferred / out of scope:**
-
-- ❌ Web UI / dashboard
-- ❌ Built-in prompt/response compression
-- ❌ "Smart" routing (removed — see PRD §6.4 for rationale)
-- ❌ Telemetry, accounts, phone-home
-- ❌ Client-side software of any kind
+```
+cmd/eco/                 main entrypoint
+internal/
+├── cli/                 commands + interactive wizards + pickers
+├── config/             TOML config
+├── secrets/            0600 provider-key store
+├── store/              SQLite: tokens, activity, audit
+├── server/             proxy, auth, rate limit, lockout, access, concurrency
+├── router/             single/fallback/round selection engine
+├── health/             circuit breaker
+├── cost/               pricing.toml loader + estimation
+├── tui/                huh wrappers + TTY detection
+├── output/             tables, colors, JSON
+└── version/            build metadata
+deploy/                  systemd unit, Caddyfile, example config
+scripts/install-oci.sh   one-shot provisioning
+prd/                     PRD + revision specs
+```
 
 ---
 
 ## 📜 License
 
-Apache-2.0
+Apache-2.0.
 
 ---
 
 <div align="center">
 
-**Built for terminal-first operators who want a secure, honest, self-hosted LLM router.**
+**Built for terminal-first operators who want a secure, honest, self-hosted LLM router —
+now friendly enough for complete beginners.**
 
 *One binary. One endpoint. Zero client install.*
 

@@ -9,11 +9,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/ganjar/ecorouter/internal/config"
 	"github.com/ganjar/ecorouter/internal/output"
 	"github.com/ganjar/ecorouter/internal/secrets"
 	"github.com/ganjar/ecorouter/internal/server"
 	"github.com/ganjar/ecorouter/internal/store"
+	"github.com/ganjar/ecorouter/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -24,6 +26,9 @@ func newStartCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the eco daemon (loopback only)",
+		Long: `Start the eco daemon on loopback. Use --detach to run in the background.
+
+💡 Use --wizard to be prompted for port and public domain.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := config.EnsureDirs(); err != nil {
 				return err
@@ -37,6 +42,52 @@ func newStartCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			force := WizardRequested()
+
+			// Optional interactive domain prompt when unset (or in wizard)
+			if (cfg.Server.Domain == "" && tui.IsInteractive() && !force) || force {
+				want, _ := tui.Confirm("Set a public domain now?",
+					"Required for public HTTPS via Caddy. Skip for local-only.",
+					false)
+				if want {
+					d, err := askString(domain, "domain",
+						"Public domain", "FQDN that points at this host.",
+						"e.g. eco.you.dev", force,
+						func(s string) error {
+							s = strings.TrimSpace(s)
+							if s == "" {
+								return fmt.Errorf("domain required (or leave empty and skip)")
+							}
+							return nil
+						})
+					if err == nil {
+						domain = strings.TrimSpace(d)
+					}
+				}
+			}
+
+			// Optional port prompt in wizard
+			if force && port == 0 {
+				portStr := fmt.Sprintf("%d", cfg.Server.Port)
+				if cfg.Server.Port == 0 {
+					portStr = "8080"
+				}
+				ps, err := askString(portStr, "port",
+					"Loopback port", "Default 8080.", "8080", force,
+					func(s string) error {
+						p, err := strconv.Atoi(strings.TrimSpace(s))
+						if err != nil || p <= 0 {
+							return fmt.Errorf("invalid port %q", s)
+						}
+						return nil
+					})
+				if err == nil {
+					if p, err := strconv.Atoi(strings.TrimSpace(ps)); err == nil && p > 0 {
+						port = p
+					}
+				}
+			}
+
 			changed := false
 			if port > 0 && cfg.Server.Port != port {
 				cfg.Server.Port = port
@@ -214,8 +265,22 @@ func newLogsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Show server logs",
+		Long: `Show server logs.
+
+💡 Run on a TTY to be prompted: view last 100 lines or follow live.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := config.LogPath()
+			// If neither --follow set nor flag explicitly disabled, prompt on TTY.
+			if !follow && !cmd.Flags().Changed("follow") && tui.IsInteractive() {
+				choice := "view"
+				if err := tui.SelectString("Logs", "",
+					[]huh.Option[string]{
+						huh.NewOption("📜  View last 100 lines", "view"),
+						huh.NewOption("📡  Follow live (Ctrl+C to stop)", "follow"),
+					}, &choice); err == nil {
+					follow = choice == "follow"
+				}
+			}
 			if follow {
 				// simple tail -f via exec if available
 				c := exec.Command("tail", "-n", "50", "-f", path)

@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/huh"
 	"github.com/ganjar/ecorouter/internal/config"
 	"github.com/ganjar/ecorouter/internal/health"
 	"github.com/ganjar/ecorouter/internal/output"
 	"github.com/ganjar/ecorouter/internal/router"
+	"github.com/ganjar/ecorouter/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +17,7 @@ func newRouteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "route",
 		Short: "Manage routes (single / fallback / round)",
+		Long:  `Manage routing rules. A route picks a model for a request — single, fallback (try in order), or round-robin.`,
 	}
 	cmd.AddCommand(
 		newRouteAddCmd(),
@@ -30,39 +33,121 @@ func newRouteAddCmd() *cobra.Command {
 	var single, fallback, round, via string
 	var noVia, viaRequired bool
 	cmd := &cobra.Command{
-		Use:   "add <name>",
+		Use:   "add [name]",
 		Short: "Add a route (--single | --fallback | --round)",
-		Args:  cobra.ExactArgs(1),
+		Long: `Add a route. A route tells EcoRouter which model to use for incoming requests.
+
+💡 Run with no arguments (or --wizard) to be guided step-by-step.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
 			}
-			modes := 0
+			force := WizardRequested()
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+
+			// Resolve mode from whichever flag was passed
+			modeIn := single + fallback + round // any non-empty count
 			mode := ""
-			var models []string
 			if single != "" {
-				modes++
 				mode = "single"
-				models = []string{single}
-			}
-			if fallback != "" {
-				modes++
+			} else if fallback != "" {
 				mode = "fallback"
-				models = splitModels(fallback)
-			}
-			if round != "" {
-				modes++
+			} else if round != "" {
 				mode = "round"
+			}
+
+			// 1. name
+			name, err = askString(name, "name",
+				"Route name",
+				"Short. This is how you'll refer to it in tokens and clients.",
+				"e.g. default, coding, cheap-chat", force,
+				func(s string) error {
+					s = strings.TrimSpace(s)
+					if s == "" {
+						return fmt.Errorf("name required")
+					}
+					if _, exists := cfg.Routes[s]; exists {
+						return fmt.Errorf("route %q already exists", s)
+					}
+					return nil
+				})
+			if err != nil {
+				return err
+			}
+			name = strings.TrimSpace(name)
+
+			// 2. mode
+			mode, err = askChoice(mode, "mode",
+				"How should this route pick a model?",
+				"Choose the selection strategy.",
+				[]huh.Option[string]{
+					huh.NewOption("🎯  Single       — always use one model", "single"),
+					huh.NewOption("🔁  Fallback    — try 1, then 2, then 3 on failure", "fallback"),
+					huh.NewOption("🔄  Round-robin — rotate evenly across models", "round"),
+				}, force)
+			if err != nil {
+				return err
+			}
+
+			// 3. models — derive from flags if present, otherwise prompt
+			var models []string
+			switch mode {
+			case "single":
+				models = []string{single}
+			case "fallback":
+				models = splitModels(fallback)
+			case "round":
 				models = splitModels(round)
 			}
-			if modes != 1 {
-				return exitErr(2, fmt.Errorf("exactly one of --single, --fallback, --round is required"))
+			if !force && modeIn == "" && len(models) == 0 && !tui.IsInteractive() {
+				return exitErr(2, fmt.Errorf("missing --%s (required in non-interactive mode)", mode))
 			}
 			if len(models) == 0 {
-				return exitErr(2, fmt.Errorf("at least one model required"))
+				opts := modelOptions(cfg)
+				if len(opts) == 0 {
+					return exitErr(2, fmt.Errorf("no models available — add a provider first"))
+				}
+				if mode == "single" {
+					m, err := askPick("", "model", "Pick the model", "", opts, force)
+					if err != nil {
+						return err
+					}
+					models = []string{m}
+				} else {
+					var chosen []string
+					if err := tui.MultiSelect(
+						fmt.Sprintf("Pick models for %s route", mode),
+						"Space to toggle. Order = fallback/rotation order.",
+						opts, &chosen); err != nil {
+						return err
+					}
+					if len(chosen) < 1 {
+						return exitErr(2, fmt.Errorf("at least one model required"))
+					}
+					models = chosen
+				}
 			}
+
+			// 4. optional saver hop
+			saverOpts := []huh.Option[string]{huh.NewOption("🚫  No saver — straight to provider", "")}
+			for _, s := range saverOptions(cfg) {
+				saverOpts = append(saverOpts, s)
+			}
+			if via == "" && !noVia && tui.IsInteractive() && (force || modeIn == "") {
+				var picked string
+				if err := tui.SelectString(
+					"Route through a token saver?",
+					"Savers compress requests before they hit the provider.",
+					saverOpts, &picked); err == nil {
+					via = picked
+				}
+			}
+
 			if via != "" && noVia {
 				return exitErr(2, fmt.Errorf("--via and --no-via are mutually exclusive"))
 			}
@@ -84,12 +169,25 @@ func newRouteAddCmd() *cobra.Command {
 				return err
 			}
 			if output.JSON {
-				return output.PrintJSON(map[string]any{"name": name, "mode": mode, "models": models, "via": via})
+				_ = output.PrintJSON(map[string]any{"name": name, "mode": mode, "models": models, "via": via})
+				flag := "--" + mode + " " + strings.Join(models, ",")
+				equiv := []string{name, flag}
+				if via != "" {
+					equiv = append(equiv, "--via "+via)
+				}
+				tui.PrintEquivalent("eco route add", equiv)
+				return nil
 			}
 			output.Success(fmt.Sprintf("Route %q created (%s: %s).", name, mode, strings.Join(models, ", ")))
 			if cfg.Defaults.ActiveRoute == name {
 				output.Info("  Set as active route.")
 			}
+			flag := "--" + mode + " " + strings.Join(models, ",")
+			equiv := []string{name, flag}
+			if via != "" {
+				equiv = append(equiv, "--via "+via)
+			}
+			tui.PrintEquivalent("eco route add", equiv)
 			return nil
 		},
 	}
@@ -150,58 +248,101 @@ func newRouteListCmd() *cobra.Command {
 }
 
 func newRouteShowCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "show <name>",
+	cmd := &cobra.Command{
+		Use:   "show [name]",
 		Short: "Show full route detail",
-		Args:  cobra.ExactArgs(1),
+		Long: `Show full route detail.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
 			}
-			r, ok := cfg.Routes[args[0]]
+			force := WizardRequested()
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
+			}
+			name, err = askPick(name, "name", "Show which route?", "", routeOptions(cfg), force)
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				return exitErr(1, fmt.Errorf("no route selected"))
+			}
+			r, ok := cfg.Routes[name]
 			if !ok {
-				return exitErr(1, fmt.Errorf("route %q not found", args[0]))
+				return exitErr(1, fmt.Errorf("route %q not found", name))
 			}
 			detail := map[string]any{
-				"name":         args[0],
+				"name":         name,
 				"mode":         r.Mode,
 				"models":       r.Models,
 				"via":          r.Via,
 				"no_via":       r.NoVia,
 				"via_required": r.ViaRequired,
-				"active":       args[0] == cfg.Defaults.ActiveRoute,
+				"active":       name == cfg.Defaults.ActiveRoute,
 			}
 			if output.JSON {
 				return output.PrintJSON(detail)
 			}
-			output.Info(fmt.Sprintf("Route: %s", args[0]))
+			output.Info(fmt.Sprintf("Route: %s", name))
 			output.Info(fmt.Sprintf("  Mode:         %s", r.Mode))
 			output.Info(fmt.Sprintf("  Models:       %s", strings.Join(r.Models, ", ")))
 			output.Info(fmt.Sprintf("  Via:          %s", emptyDash(r.Via)))
 			output.Info(fmt.Sprintf("  No-via:       %v", r.NoVia))
 			output.Info(fmt.Sprintf("  Via-required: %v", r.ViaRequired))
-			output.Info(fmt.Sprintf("  Active:       %v", args[0] == cfg.Defaults.ActiveRoute))
+			output.Info(fmt.Sprintf("  Active:       %v", name == cfg.Defaults.ActiveRoute))
 			return nil
 		},
 	}
+	return cmd
 }
 
 func newRouteRemoveCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "remove <name>",
+	var assumeYes bool
+	cmd := &cobra.Command{
+		Use:   "remove [name]",
 		Short: "Delete a route",
-		Args:  cobra.ExactArgs(1),
+		Long: `Delete a route. Tokens scoped to this route will fail until re-scoped.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
 			}
-			if _, ok := cfg.Routes[args[0]]; !ok {
-				return exitErr(1, fmt.Errorf("route %q not found", args[0]))
+			force := WizardRequested()
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
 			}
-			delete(cfg.Routes, args[0])
-			if cfg.Defaults.ActiveRoute == args[0] {
+			name, err = askPick(name, "name", "Remove which route?",
+				"Tokens scoped to this route will fail until re-scoped.",
+				routeOptions(cfg), force)
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				return exitErr(1, fmt.Errorf("no route selected"))
+			}
+			if _, ok := cfg.Routes[name]; !ok {
+				return exitErr(1, fmt.Errorf("route %q not found", name))
+			}
+			ok, err := confirmDestructive(assumeYes,
+				"Remove route "+name+"?",
+				"Tokens scoped to this route will fail until re-scoped.")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+			delete(cfg.Routes, name)
+			if cfg.Defaults.ActiveRoute == name {
 				cfg.Defaults.ActiveRoute = ""
 				for n := range cfg.Routes {
 					cfg.Defaults.ActiveRoute = n
@@ -212,35 +353,52 @@ func newRouteRemoveCmd() *cobra.Command {
 				return err
 			}
 			if output.JSON {
-				return output.PrintJSON(map[string]string{"removed": args[0]})
+				return output.PrintJSON(map[string]string{"removed": name})
 			}
-			output.Success(fmt.Sprintf("Route %q removed.", args[0]))
+			output.Success(fmt.Sprintf("Route %q removed.", name))
+			tui.PrintEquivalent("eco route remove", []string{name, "--yes"})
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "skip confirmation prompt")
+	return cmd
 }
 
 func newRouteTestCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "test <name>",
+	cmd := &cobra.Command{
+		Use:   "test [name]",
 		Short: "Dry-run: which model would be selected now, and why",
-		Args:  cobra.ExactArgs(1),
+		Long: `Dry-run a route. Shows which model would be selected right now and why.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
 			}
-			if _, ok := cfg.Routes[args[0]]; !ok {
-				return exitErr(1, fmt.Errorf("route %q not found", args[0]))
+			force := WizardRequested()
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
 			}
-			h := health.New(cfg.Health.Window, cfg.Health.ErrorThreshold, cfg.Health.MinRequests, cfg.Health.CooldownMs)
-			eng := router.New(h)
-			// for round, peek without advancing permanently — Resolve advances; for test we document next
-			d, err := eng.Resolve(cfg, args[0])
+			name, err = askPick(name, "name", "Test which route?",
+				"Dry-run selection.", routeOptions(cfg), force)
 			if err != nil {
 				return err
 			}
-			// note: Resolve advances round counter in process memory only (not daemon)
+			if name == "" {
+				return exitErr(1, fmt.Errorf("no route selected"))
+			}
+			if _, ok := cfg.Routes[name]; !ok {
+				return exitErr(1, fmt.Errorf("route %q not found", name))
+			}
+			h := health.New(cfg.Health.Window, cfg.Health.ErrorThreshold, cfg.Health.MinRequests, cfg.Health.CooldownMs)
+			eng := router.New(h)
+			d, err := eng.Resolve(cfg, name)
+			if err != nil {
+				return err
+			}
 			if output.JSON {
 				return output.PrintJSON(d)
 			}
@@ -254,32 +412,52 @@ func newRouteTestCmd() *cobra.Command {
 			return nil
 		},
 	}
+	return cmd
 }
 
 func newUseCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "use <route>",
+	cmd := &cobra.Command{
+		Use:   "use [route]",
 		Short: "Set the active/default route",
-		Args:  cobra.ExactArgs(1),
+		Long: `Set the active route. The active route is used by default when a token
+has no explicit route scope.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := requireConfig()
 			if err != nil {
 				return err
 			}
-			if _, ok := cfg.Routes[args[0]]; !ok {
-				return exitErr(1, fmt.Errorf("route %q not found", args[0]))
+			force := WizardRequested()
+			name := ""
+			if len(args) == 1 {
+				name = args[0]
 			}
-			cfg.Defaults.ActiveRoute = args[0]
+			name, err = askPick(name, "route", "Set which route as active?", "",
+				routeOptions(cfg), force)
+			if err != nil {
+				return err
+			}
+			if name == "" {
+				return exitErr(1, fmt.Errorf("no route selected"))
+			}
+			if _, ok := cfg.Routes[name]; !ok {
+				return exitErr(1, fmt.Errorf("route %q not found", name))
+			}
+			cfg.Defaults.ActiveRoute = name
 			if err := cfg.Save(); err != nil {
 				return err
 			}
 			if output.JSON {
-				return output.PrintJSON(map[string]string{"active_route": args[0]})
+				return output.PrintJSON(map[string]string{"active_route": name})
 			}
-			output.Success(fmt.Sprintf("Active route set to %q.", args[0]))
+			output.Success(fmt.Sprintf("Active route set to %q.", name))
+			tui.PrintEquivalent("eco use", []string{name})
 			return nil
 		},
 	}
+	return cmd
 }
 
 func splitModels(s string) []string {

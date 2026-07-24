@@ -2,12 +2,16 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/ganjar/ecorouter/internal/auth"
 	"github.com/ganjar/ecorouter/internal/config"
 	"github.com/ganjar/ecorouter/internal/output"
 	"github.com/ganjar/ecorouter/internal/store"
+	"github.com/ganjar/ecorouter/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +19,7 @@ func newTokenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "token",
 		Short: "Manage client Bearer tokens",
+		Long:  `Manage client Bearer tokens. Each token is shown ONCE on creation — copy it immediately.`,
 	}
 	cmd.AddCommand(
 		newTokenNewCmd(),
@@ -31,17 +36,186 @@ func newTokenNewCmd() *cobra.Command {
 	var dailyCap float64
 	var maxConcurrent int
 	cmd := &cobra.Command{
-		Use:   "new <label>",
+		Use:   "new [label]",
 		Short: "Generate a Bearer token (shown once)",
-		Args:  cobra.ExactArgs(1),
+		Long: `Generate a new Bearer token. The plaintext token is printed ONCE.
+
+💡 Run with no arguments (or --wizard) to be guided step-by-step.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			label := args[0]
 			if err := config.EnsureDirs(); err != nil {
 				return err
 			}
-			if _, err := requireConfig(); err != nil {
+			cfg, err := requireConfig()
+			if err != nil {
 				return err
 			}
+			force := WizardRequested()
+
+			label := ""
+			if len(args) == 1 {
+				label = args[0]
+			}
+
+			// 1. label
+			label, err = askString(label, "label",
+				"Who is this token for?",
+				"A label helps you identify it later. Not shared with the client.",
+				"e.g. alice-laptop, ci, staging", force,
+				func(s string) error {
+					if strings.TrimSpace(s) == "" {
+						return fmt.Errorf("label required")
+					}
+					return nil
+				})
+			if err != nil {
+				return err
+			}
+			label = strings.TrimSpace(label)
+
+			// 2. route scope
+			routeOpts := []huh.Option[string]{huh.NewOption("🌐  Any route (unrestricted)", "")}
+			for _, o := range routeOptions(cfg) {
+				routeOpts = append(routeOpts, o)
+			}
+			route, err = askPick(route, "route",
+				"Which route can this token use?", "", routeOpts, force)
+			if err != nil {
+				return err
+			}
+
+			// 3. rate limit (choice + custom)
+			if rate == "" {
+				rate = "60/min"
+			}
+			rateChoice, err := askChoice(rate, "rate",
+				"Rate limit", "How many requests per minute?",
+				[]huh.Option[string]{
+					huh.NewOption("Light      — 30/min", "30/min"),
+					huh.NewOption("Normal     — 60/min", "60/min"),
+					huh.NewOption("Heavy      — 120/min", "120/min"),
+					huh.NewOption("Very heavy — 600/min", "600/min"),
+					huh.NewOption("Custom…", "__custom__"),
+				}, force)
+			if err != nil {
+				return err
+			}
+			if rateChoice == "__custom__" {
+				rate, err = askString("", "rate", "Custom rate",
+					"Format: N/min or N/s or N/h", "e.g. 200/min", force,
+					func(s string) error {
+						if _, _, err := config.ParseRate(s); err != nil {
+							return err
+						}
+						return nil
+					})
+				if err != nil {
+					return err
+				}
+			} else {
+				rate = rateChoice
+			}
+
+			// 4. daily cap (choice + custom). Default = 0 (no cap)
+			capStr := ""
+			if dailyCap > 0 {
+				capStr = strconv.FormatFloat(dailyCap, 'f', -1, 64)
+			}
+			capChoice, err := askChoice(capStr, "daily-cap",
+				"Daily spend cap", "",
+				[]huh.Option[string]{
+					huh.NewOption("💰  No cap", "0"),
+					huh.NewOption("💵  $1 / day", "1"),
+					huh.NewOption("💵  $5 / day", "5"),
+					huh.NewOption("💵  $10 / day", "10"),
+					huh.NewOption("💵  $25 / day", "25"),
+					huh.NewOption("Custom…", "__custom__"),
+				}, force)
+			if err != nil {
+				return err
+			}
+			if capChoice == "__custom__" {
+				capStr, err = askString("", "daily-cap", "Custom cap (USD/day)", "", "e.g. 12.50", force, nil)
+				if err != nil {
+					return err
+				}
+				dailyCap = parseFloat(capStr)
+			} else {
+				dailyCap = parseFloat(capChoice)
+			}
+
+			// 5. concurrency (choice + custom)
+			concStr := ""
+			if maxConcurrent > 0 {
+				concStr = strconv.Itoa(maxConcurrent)
+			}
+			concChoice, err := askChoice(concStr, "concurrency",
+				"Max concurrent requests", "",
+				[]huh.Option[string]{
+					huh.NewOption("No cap", "0"),
+					huh.NewOption("1", "1"),
+					huh.NewOption("2", "2"),
+					huh.NewOption("4", "4"),
+					huh.NewOption("8", "8"),
+					huh.NewOption("Custom…", "__custom__"),
+				}, force)
+			if err != nil {
+				return err
+			}
+			if concChoice == "__custom__" {
+				concStr, err = askString("", "concurrency", "Custom concurrency", "", "e.g. 16", force, nil)
+				if err != nil {
+					return err
+				}
+				maxConcurrent, _ = strconv.Atoi(concStr)
+			} else {
+				maxConcurrent, _ = strconv.Atoi(concChoice)
+			}
+
+			// 6. expiry (choice + custom)
+			expChoice, err := askChoice(expires, "expires",
+				"Expiry", "",
+				[]huh.Option[string]{
+					huh.NewOption("⏳  Never", ""),
+					huh.NewOption("📅  30 days", "30d"),
+					huh.NewOption("📅  90 days", "90d"),
+					huh.NewOption("📅  1 year", "365d"),
+					huh.NewOption("Custom…", "__custom__"),
+				}, force)
+			if err != nil {
+				return err
+			}
+			if expChoice == "__custom__" {
+				expires, err = askString("", "expires", "Custom expiry",
+					"e.g. 45d, 12h, 6m", "", force, nil)
+				if err != nil {
+					return err
+				}
+			} else {
+				expires = expChoice
+			}
+
+			// 7. Model scope (optional) — only when route is set and has models
+			if models == "" && route != "" {
+				if r, ok := cfg.Routes[route]; ok && len(r.Models) > 0 && (force || tui.IsInteractive()) {
+					scope := "all"
+					if err := tui.SelectString("Model scope", "",
+						[]huh.Option[string]{
+							huh.NewOption("All models on that route", "all"),
+							huh.NewOption("Restrict to a subset", "subset"),
+						}, &scope); err == nil && scope == "subset" {
+						opts := make([]huh.Option[string], 0, len(r.Models))
+						for _, m := range r.Models {
+							opts = append(opts, huh.NewOption(m, m))
+						}
+						var chosen []string
+						_ = tui.MultiSelect("Allowed models", "Space to toggle.", opts, &chosen)
+						models = strings.Join(chosen, ",")
+					}
+				}
+			}
+
+			// Insert
 			db, err := store.Open("")
 			if err != nil {
 				return err
@@ -82,7 +256,7 @@ func newTokenNewCmd() *cobra.Command {
 			_ = db.InsertAudit("token_create", "label="+label, "", id)
 
 			if output.JSON {
-				return output.PrintJSON(map[string]any{
+				_ = output.PrintJSON(map[string]any{
 					"id":             id,
 					"label":          label,
 					"token":          plain,
@@ -90,6 +264,27 @@ func newTokenNewCmd() *cobra.Command {
 					"max_concurrent": maxConcurrent,
 					"notice":         "store this token now; it will not be shown again",
 				})
+				equiv := []string{fmt.Sprintf("%q", label)}
+				if route != "" {
+					equiv = append(equiv, "--route "+route)
+				}
+				if models != "" {
+					equiv = append(equiv, "--models "+models)
+				}
+				if rate != "" {
+					equiv = append(equiv, "--rate "+rate)
+				}
+				if dailyCap > 0 {
+					equiv = append(equiv, fmt.Sprintf("--daily-cap %.2f", dailyCap))
+				}
+				if maxConcurrent > 0 {
+					equiv = append(equiv, fmt.Sprintf("--concurrency %d", maxConcurrent))
+				}
+				if expires != "" {
+					equiv = append(equiv, "--expires "+expires)
+				}
+				tui.PrintEquivalent("eco token new", equiv)
+				return nil
 			}
 			output.Success(fmt.Sprintf("Token created for %q (id %s).", label, id))
 			fmt.Println()
@@ -105,6 +300,26 @@ func newTokenNewCmd() *cobra.Command {
 			if maxConcurrent > 0 {
 				fmt.Printf("  Max concurrent:  %d\n", maxConcurrent)
 			}
+			equiv := []string{fmt.Sprintf("%q", label)}
+			if route != "" {
+				equiv = append(equiv, "--route "+route)
+			}
+			if models != "" {
+				equiv = append(equiv, "--models "+models)
+			}
+			if rate != "" {
+				equiv = append(equiv, "--rate "+rate)
+			}
+			if dailyCap > 0 {
+				equiv = append(equiv, fmt.Sprintf("--daily-cap %.2f", dailyCap))
+			}
+			if maxConcurrent > 0 {
+				equiv = append(equiv, fmt.Sprintf("--concurrency %d", maxConcurrent))
+			}
+			if expires != "" {
+				equiv = append(equiv, "--expires "+expires)
+			}
+			tui.PrintEquivalent("eco token new", equiv)
 			return nil
 		},
 	}
@@ -181,19 +396,50 @@ func newTokenListCmd() *cobra.Command {
 }
 
 func newTokenRotateCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "rotate <id>",
+	var assumeYes bool
+	cmd := &cobra.Command{
+		Use:   "rotate [id]",
 		Short: "Issue a new secret; invalidate the old one",
-		Args:  cobra.ExactArgs(1),
+		Long: `Issue a new secret for an existing token. The old secret stops working
+immediately.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db, err := store.Open("")
 			if err != nil {
 				return err
 			}
 			defer db.Close()
-			t, err := db.GetToken(args[0])
+			force := WizardRequested()
+			id := ""
+			if len(args) == 1 {
+				id = args[0]
+			}
+			opts, err := tokenOptions(db)
 			if err != nil {
-				return exitErr(1, fmt.Errorf("token %s not found", args[0]))
+				return err
+			}
+			id, err = askPick(id, "id", "Rotate which token?",
+				"The old secret will stop working immediately.", opts, force)
+			if err != nil {
+				return err
+			}
+			if id == "" {
+				return exitErr(1, fmt.Errorf("no token selected"))
+			}
+			t, err := db.GetToken(id)
+			if err != nil {
+				return exitErr(1, fmt.Errorf("token %s not found", id))
+			}
+			ok, err := confirmDestructive(assumeYes,
+				"Rotate token "+id+"?",
+				"The old secret becomes invalid immediately.")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
 			}
 			plain, err := auth.Generate()
 			if err != nil {
@@ -208,64 +454,155 @@ func newTokenRotateCmd() *cobra.Command {
 			}
 			_ = db.InsertAudit("token_rotate", "rotated", "", t.ID)
 			if output.JSON {
-				return output.PrintJSON(map[string]any{"id": t.ID, "token": plain, "notice": "store this token now"})
+				_ = output.PrintJSON(map[string]any{"id": t.ID, "token": plain, "notice": "store this token now"})
+				tui.PrintEquivalent("eco token rotate", []string{t.ID, "--yes"})
+				return nil
 			}
 			output.Success(fmt.Sprintf("Token %s rotated. Old secret is invalid.", t.ID))
 			fmt.Println()
 			fmt.Printf("  %s\n", plain)
 			fmt.Println("  ← copy now, shown once")
+			tui.PrintEquivalent("eco token rotate", []string{t.ID, "--yes"})
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "skip confirmation prompt")
+	return cmd
 }
 
 func newTokenRevokeCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "revoke <id>",
+	var assumeYes bool
+	cmd := &cobra.Command{
+		Use:   "revoke [id]",
 		Short: "Instantly revoke a token",
-		Args:  cobra.ExactArgs(1),
+		Long: `Instantly revoke a token. The client will lose access immediately.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db, err := store.Open("")
 			if err != nil {
 				return err
 			}
 			defer db.Close()
-			if err := db.RevokeToken(args[0]); err != nil {
+			force := WizardRequested()
+			id := ""
+			if len(args) == 1 {
+				id = args[0]
+			}
+			opts, err := tokenOptions(db)
+			if err != nil {
+				return err
+			}
+			id, err = askPick(id, "id", "Revoke which token?",
+				"This cannot be undone.", opts, force)
+			if err != nil {
+				return err
+			}
+			if id == "" {
+				return exitErr(1, fmt.Errorf("no token selected"))
+			}
+			ok, err := confirmDestructive(assumeYes,
+				fmt.Sprintf("Revoke %s?", id),
+				"This immediately stops the token from working.")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+			if err := db.RevokeToken(id); err != nil {
 				return exitErr(1, err)
 			}
-			_ = db.InsertAudit("token_revoke", "revoked", "", args[0])
+			_ = db.InsertAudit("token_revoke", "revoked", "", id)
 			if output.JSON {
-				return output.PrintJSON(map[string]string{"revoked": args[0]})
+				return output.PrintJSON(map[string]string{"revoked": id})
 			}
-			output.Success(fmt.Sprintf("Token %s revoked.", args[0]))
+			output.Success(fmt.Sprintf("Token %s revoked.", id))
+			tui.PrintEquivalent("eco token revoke", []string{id, "--yes"})
 			return nil
 		},
 	}
+	cmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "skip confirmation prompt")
+	return cmd
 }
 
 func newTokenScopeCmd() *cobra.Command {
 	var route, models string
 	cmd := &cobra.Command{
-		Use:   "scope <id>",
+		Use:   "scope [id]",
 		Short: "Adjust token scope after creation",
-		Args:  cobra.ExactArgs(1),
+		Long: `Adjust a token's route and model scope after creation.
+
+💡 Run with no arguments to pick from a list.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			db, err := store.Open("")
 			if err != nil {
 				return err
 			}
 			defer db.Close()
-			if _, err := db.GetToken(args[0]); err != nil {
-				return exitErr(1, fmt.Errorf("token %s not found", args[0]))
-			}
-			if err := db.UpdateTokenScope(args[0], route, splitModels(models)); err != nil {
+			cfg, err := requireConfig()
+			if err != nil {
 				return err
 			}
-			_ = db.InsertAudit("token_scope", "route="+route+" models="+models, "", args[0])
-			if output.JSON {
-				return output.PrintJSON(map[string]any{"id": args[0], "scope_route": route, "scope_models": splitModels(models)})
+			force := WizardRequested()
+			id := ""
+			if len(args) == 1 {
+				id = args[0]
 			}
-			output.Success(fmt.Sprintf("Token %s scope updated.", args[0]))
+			opts, err := tokenOptions(db)
+			if err != nil {
+				return err
+			}
+			id, err = askPick(id, "id", "Adjust scope for which token?", "", opts, force)
+			if err != nil {
+				return err
+			}
+			if id == "" {
+				return exitErr(1, fmt.Errorf("no token selected"))
+			}
+			if _, err := db.GetToken(id); err != nil {
+				return exitErr(1, fmt.Errorf("token %s not found", id))
+			}
+
+			// Route scope
+			routeOpts := []huh.Option[string]{huh.NewOption("(no change / cleared)", "")}
+			for _, o := range routeOptions(cfg) {
+				routeOpts = append(routeOpts, o)
+			}
+			// If --route flag not provided AND not in wizard, skip; otherwise prompt
+			if route != "" || force {
+				route, err = askPick(route, "route",
+					"Scope token to which route?", "(empty = no scope)",
+					routeOpts, force)
+				if err != nil {
+					return err
+				}
+			}
+
+			// Model multi-select (optional)
+			if models != "" || force {
+				all := modelOptions(cfg)
+				chosen := splitModels(models)
+				if len(all) > 0 {
+					if err := tui.MultiSelect(
+						"Restrict to which models?",
+						"Space to toggle. Empty = no restriction.",
+						all, &chosen); err == nil {
+						models = strings.Join(chosen, ",")
+					}
+				}
+			}
+
+			if err := db.UpdateTokenScope(id, route, splitModels(models)); err != nil {
+				return err
+			}
+			_ = db.InsertAudit("token_scope", "route="+route+" models="+models, "", id)
+			if output.JSON {
+				return output.PrintJSON(map[string]any{"id": id, "scope_route": route, "scope_models": splitModels(models)})
+			}
+			output.Success(fmt.Sprintf("Token %s scope updated.", id))
 			return nil
 		},
 	}
